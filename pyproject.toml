@@ -31,6 +31,7 @@ py-modules = [
     "wr90_case",
     "session_discovery",
     "aedt_launcher",
+    "aedt_project_guard",
     "mcp_server",
 ]
 
