@@ -51,6 +51,8 @@ class FakeApp:
         self.valid = valid
         self.kwargs = kwargs
         self.analyze_calls = []
+        self.analyze_setup_calls = []
+        self.save_calls = []
         self.export_calls = []
         self.post = FakePost()
         self.configurations = FakeConfigurations()
@@ -71,6 +73,35 @@ class FakeApp:
 
     def analyze(self, **kwargs):
         self.analyze_calls.append(kwargs)
+        return True
+
+    def analyze_setup(
+        self,
+        name=None,
+        cores=None,
+        tasks=None,
+        gpus=None,
+        acf_file=None,
+        use_auto_settings=True,
+        revert_to_initial_mesh=False,
+        blocking=True,
+    ):
+        self.analyze_setup_calls.append(
+            {
+                "name": name,
+                "cores": cores,
+                "tasks": tasks,
+                "gpus": gpus,
+                "acf_file": acf_file,
+                "use_auto_settings": use_auto_settings,
+                "revert_to_initial_mesh": revert_to_initial_mesh,
+                "blocking": blocking,
+            }
+        )
+        return True
+
+    def save_project(self, project_name=None, project_path=None):
+        self.save_calls.append((project_name, project_path))
         return True
 
     def get_setups(self):
@@ -256,12 +287,16 @@ class OfficialCapabilityTests(unittest.TestCase):
         self.assertTrue(validation["valid"])
         self.assertTrue(analysis["started"])
         self.assertFalse(analysis["solver_completion_confirmed"])
-        self.assertFalse(self.active_app.analyze_calls[0]["blocking"])
+        # Interactive solves must go through analyze_setup(): PyAEDT's analyze()
+        # unconditionally saves the project, and an AEDT save resets Solver Type
+        # to "Direct Solver".
+        self.assertEqual(self.active_app.analyze_calls, [])
+        self.assertFalse(self.active_app.analyze_setup_calls[0]["blocking"])
         self.assertTrue(analysis["icepak_safe_mode_applied"])
         self.assertEqual(analysis["requested_resources"]["num_cores"], 4)
         self.assertEqual(analysis["effective_resources"]["num_cores"], 1)
-        self.assertEqual(self.active_app.analyze_calls[0]["cores"], 1)
-        self.assertFalse(self.active_app.analyze_calls[0]["use_auto_settings"])
+        self.assertEqual(self.active_app.analyze_setup_calls[0]["cores"], 1)
+        self.assertFalse(self.active_app.analyze_setup_calls[0]["use_auto_settings"])
 
     def test_icepak_safe_mode_can_be_disabled(self):
         analysis = self.backend.execute(
@@ -277,8 +312,46 @@ class OfficialCapabilityTests(unittest.TestCase):
         )
 
         self.assertFalse(analysis["icepak_safe_mode_applied"])
-        self.assertEqual(self.active_app.analyze_calls[0]["cores"], 4)
-        self.assertTrue(self.active_app.analyze_calls[0]["use_auto_settings"])
+        self.assertEqual(self.active_app.analyze_setup_calls[0]["cores"], 4)
+        self.assertTrue(self.active_app.analyze_setup_calls[0]["use_auto_settings"])
+
+    def test_interactive_analysis_does_not_save_the_project(self):
+        self.backend.execute(
+            self.target,
+            "analyze_design",
+            {"project_name": "ThermalProject", "design_name": "IcepakDesign1",
+             "setup_name": "Setup1"},
+        )
+
+        self.assertEqual(self.desktop.saved, [])
+        self.assertEqual(self.active_app.save_calls, [])
+        self.assertEqual(self.active_app.analyze_calls, [])
+        self.assertEqual(len(self.active_app.analyze_setup_calls), 1)
+        self.assertEqual(self.active_app.analyze_setup_calls[0]["name"], "Setup1")
+
+    def test_save_before_solve_is_opt_in(self):
+        self.backend.execute(
+            self.target,
+            "analyze_design",
+            {"project_name": "ThermalProject", "design_name": "IcepakDesign1",
+             "setup_name": "Setup1", "save_before_solve": True},
+        )
+
+        self.assertEqual(len(self.active_app.save_calls), 1)
+        self.assertEqual(len(self.active_app.analyze_setup_calls), 1)
+
+    def test_batch_solve_keeps_the_pyaedt_analyze_path(self):
+        # solve_in_batch closes and reopens the file, so it still needs analyze().
+        self.backend.execute(
+            self.target,
+            "analyze_design",
+            {"project_name": "ThermalProject", "design_name": "IcepakDesign1",
+             "setup_name": "Setup1", "solve_in_batch": True},
+        )
+
+        self.assertEqual(self.active_app.analyze_setup_calls, [])
+        self.assertEqual(len(self.active_app.analyze_calls), 1)
+        self.assertTrue(self.active_app.analyze_calls[0]["solve_in_batch"])
 
     def test_failed_validation_prevents_analysis(self):
         self.active_app.valid = False

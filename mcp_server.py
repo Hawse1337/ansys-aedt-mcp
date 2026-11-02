@@ -492,11 +492,18 @@ async def analyze_design(
     revert_to_initial_mesh: bool = False,
     analyze_all_designs: bool = False,
     icepak_safe_mode: bool = True,
+    save_before_solve: bool = False,
     pid: int | None = None,
     port: int | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Validate and submit an analysis; Icepak uses safe single-core defaults."""
+    """Validate and submit an analysis; Icepak uses safe single-core defaults.
+
+    ``save_before_solve`` defaults to ``False`` because saving an AEDT project
+    resets every setup's Solver Type to "Direct Solver"; on large models that
+    exhausts memory. Set it to ``True`` only if the design state must be written
+    to disk before the solve.
+    """
     return await _worker_call(
         "analyze_design",
         pid=pid,
@@ -516,6 +523,7 @@ async def analyze_design(
             "revert_to_initial_mesh": revert_to_initial_mesh,
             "analyze_all_designs": analyze_all_designs,
             "icepak_safe_mode": icepak_safe_mode,
+            "save_before_solve": save_before_solve,
         },
         timeout=timeout if timeout is not None else 600.0,
     )

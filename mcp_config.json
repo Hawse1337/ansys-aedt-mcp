@@ -7,8 +7,8 @@
       "env": {
         "AEDT_VERSION": "2026.1",
         "AEDT_INSTALL_DIR": "D:\\ANSYS Inc\\v261\\AnsysEM",
-        "AEDT_WORKER_TIMEOUT": "60",
-        "AEDT_LAUNCH_TIMEOUT": "120",
+        "AEDT_WORKER_TIMEOUT": "1800",
+        "AEDT_LAUNCH_TIMEOUT": "240",
         "AEDT_LOG_DIR": "%TEMP%\\aedt-mcp"
       }
     }

@@ -768,24 +768,48 @@ class OfficialCapabilities:
             adjustments.append("Icepak safe mode disabled GPU allocation")
         if safe_mode_applied and requested_auto_settings:
             adjustments.append("Icepak safe mode disabled automatic DSO settings")
-        started = bool(
-            app.analyze(
-                setup=setup_name,
-                cores=effective_cores,
-                tasks=effective_tasks,
-                gpus=effective_gpus,
-                acf_file=acf_file,
-                use_auto_settings=effective_auto_settings,
-                solve_in_batch=solve_in_batch,
-                machine=_optional_text(arguments, "machine", "localhost")
-                or "localhost",
-                run_in_thread=_boolean(arguments, "run_in_thread", False),
-                revert_to_initial_mesh=_boolean(
-                    arguments, "revert_to_initial_mesh", False
-                ),
-                blocking=False,
+        revert_to_initial_mesh = _boolean(arguments, "revert_to_initial_mesh", False)
+        save_before_solve = _boolean(arguments, "save_before_solve", False)
+        if save_before_solve:
+            # Opt-in only: a project save resets each setup's Solver Type back to
+            # "Direct Solver" in AEDT 2026 R1, which on large models (e.g. a 70 mm
+            # aperture at 28 GHz) exhausts memory and fails with SOLVER_OUT_OF_MEMORY.
+            app.save_project()
+        if solve_in_batch:
+            # Batch solve closes and reopens the .aedt file, so it needs a saved
+            # project; keep the original PyAEDT path for that mode.
+            started = bool(
+                app.analyze(
+                    setup=setup_name,
+                    cores=effective_cores,
+                    tasks=effective_tasks,
+                    gpus=effective_gpus,
+                    acf_file=acf_file,
+                    use_auto_settings=effective_auto_settings,
+                    solve_in_batch=True,
+                    machine=_optional_text(arguments, "machine", "localhost")
+                    or "localhost",
+                    run_in_thread=_boolean(arguments, "run_in_thread", False),
+                    revert_to_initial_mesh=revert_to_initial_mesh,
+                    blocking=False,
+                )
             )
-        )
+        else:
+            # Interactive solve. PyAEDT's analyze() calls save_project()
+            # unconditionally (analysis.py), so calling analyze_setup() directly is
+            # the only way to submit without saving first.
+            started = bool(
+                app.analyze_setup(
+                    name=setup_name,
+                    cores=effective_cores,
+                    tasks=effective_tasks,
+                    gpus=effective_gpus,
+                    acf_file=acf_file,
+                    use_auto_settings=effective_auto_settings,
+                    revert_to_initial_mesh=revert_to_initial_mesh,
+                    blocking=False,
+                )
+            )
         return {
             "target": self._target(target),
             "started": started,

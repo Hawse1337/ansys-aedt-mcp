@@ -22,6 +22,18 @@ def _bridge_configured_aedt_install() -> None:
 
 _bridge_configured_aedt_install()
 
+# Install the project guard BEFORE anything can construct a PyAEDT application.
+# It rewrites a bare project name to the absolute path of the existing .aedt so
+# PyAEDT opens it instead of creating and overwriting it. See aedt_project_guard.py.
+# The broker's stdout carries the JSON protocol, so the guard captures whatever
+# PyAEDT prints on import and re-emits it on stderr.
+try:
+    import aedt_project_guard
+
+    aedt_project_guard.install()
+except Exception as _guard_exc:  # never let the guard itself break the broker
+    print("[aedt-guard] install failed: %s" % _guard_exc, file=sys.stderr, flush=True)
+
 from aedt_close_watcher import AedtCloseWatcher
 from pyaedt_backend import BackendCommandError, PyAedtBackend
 from worker_protocol import WorkerProtocolError, WorkerRequest, WorkerResponse
