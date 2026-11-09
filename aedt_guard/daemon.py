@@ -22,6 +22,7 @@ from typing import Any, Callable
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "BUDGET_EXCEEDED", "RECOVERY_REQUIRED"}
 HEARTBEAT_FRESH_S = 30.0
 LOCK_STALE_S = 30.0
+RECOVERY_WAIT_S = 300.0
 
 
 def _now() -> str:
@@ -149,20 +150,39 @@ class DaemonPaths:
 
     # -------------------------------------------------------------- singleton
     def acquire_singleton(self) -> bool:
-        if self.alive().get("alive"):
-            return False
-        if self.lock.is_file():
-            try:
-                info = json.loads(self.lock.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                info = {}
-            owner = int(info.get("pid") or 0)
-            at = float(info.get("at") or 0.0)
-            if owner and _pid_alive(owner) and (_now_ts() - at) < LOCK_STALE_S:
-                return False
+        """Atomically claim the campaign lock.
+
+        ``O_EXCL`` makes the claim race-free: with four daemons started at once
+        exactly one creates the file and the others observe ``FileExistsError``.
+        A lock whose owner is dead (or older than ``LOCK_STALE_S``) is taken over.
+        """
         self.ensure()
-        self.lock.write_text(json.dumps({"pid": os.getpid(), "at": _now_ts()}), encoding="utf-8")
-        return True
+        payload = json.dumps({"pid": os.getpid(), "at": _now_ts()})
+        for _attempt in range(2):
+            try:
+                handle = os.open(str(self.lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
+                try:
+                    info = json.loads(self.lock.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    info = {}
+                owner = int(info.get("pid") or 0)
+                at = float(info.get("at") or 0.0)
+                stale = not owner or not _pid_alive(owner) or (_now_ts() - at) >= LOCK_STALE_S
+                if not stale:
+                    return False
+                try:
+                    self.lock.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                    stream.write(payload)
+                return True
+            except OSError:
+                return False
+        return False
 
     def release_singleton(self) -> None:
         try:
@@ -211,12 +231,17 @@ class RunDaemon:
 
     @staticmethod
     def _wait_if_solving(adapter: Any, timeout_s: float, poll_interval_s: float) -> None:
-        """A crashed SOLVING run may still be solving in AEDT; wait for idle."""
+        """A crashed SOLVING run may still be solving in AEDT; wait for idle.
+
+        Capped at ``RECOVERY_WAIT_S``: a killed AEDT can leave a sticky
+        ``running`` flag, and waiting the full run timeout would starve every
+        other queued request. Finalize later reports the real evidence.
+        """
         wait = getattr(adapter, "wait", None)
         if not callable(wait):
             return
         try:
-            wait(min(timeout_s, 1800.0), max(poll_interval_s, 2.0))
+            wait(min(float(timeout_s), RECOVERY_WAIT_S), max(poll_interval_s, 2.0))
         except Exception:  # noqa: BLE001 - finalize will report the real evidence
             pass
 
@@ -328,6 +353,7 @@ class RunDaemon:
             if max_seconds is not None and time.monotonic() - started >= max_seconds:
                 return
             time.sleep(poll_interval_s)
+
 
 
 

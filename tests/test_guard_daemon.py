@@ -240,3 +240,46 @@ class EnqueueTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+class SingletonLockTests(unittest.TestCase):
+    def test_singleton_is_exclusive(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp:
+            first = DaemonPaths(tmp)
+            second = DaemonPaths(tmp)
+            self.assertTrue(first.acquire_singleton())
+            self.assertFalse(second.acquire_singleton())
+            first.release_singleton()
+
+    def test_dead_owner_lock_is_taken_over(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp:
+            paths = DaemonPaths(tmp).ensure()
+            paths.lock.write_text(json.dumps({"pid": 999999, "at": 1.0}), encoding="utf-8")
+            self.assertTrue(paths.acquire_singleton())
+            paths.release_singleton()
+
+    def test_live_owner_lock_is_respected(self):
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp:
+            paths = DaemonPaths(tmp).ensure()
+            paths.lock.write_text(json.dumps({"pid": os.getpid(), "at": __import__("time").time()}),
+                                  encoding="utf-8")
+            self.assertFalse(paths.acquire_singleton())
+
+
+class RecoveryWaitTests(unittest.TestCase):
+    def test_wait_is_capped_for_sticky_solver_state(self):
+        from aedt_guard.daemon import RECOVERY_WAIT_S, RunDaemon
+
+        seen = {}
+
+        class StickyAdapter:
+            def wait(self, timeout_s, poll_interval_s):
+                seen["timeout"] = timeout_s
+                return {"running": True, "timed_out": True}
+
+        RunDaemon._wait_if_solving(StickyAdapter(), 1800.0, 5.0)
+        self.assertLessEqual(seen["timeout"], RECOVERY_WAIT_S)
+
+    def test_adapter_without_wait_is_ignored(self):
+        from aedt_guard.daemon import RunDaemon
+
+        RunDaemon._wait_if_solving(object(), 10.0, 1.0)  # must not raise
