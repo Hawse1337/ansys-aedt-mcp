@@ -21,7 +21,10 @@ from typing import Any, Callable
 
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "BUDGET_EXCEEDED", "RECOVERY_REQUIRED"}
 HEARTBEAT_FRESH_S = 30.0
-LOCK_STALE_S = 30.0
+# A resident daemon owns the campaign lock for as long as it lives. The lock is
+# only taken over when its owner is provably dead, or after this long without a
+# heartbeat refresh (a stuck process must not block the campaign forever).
+LOCK_STALE_S = 3600.0
 RECOVERY_WAIT_S = 300.0
 
 
@@ -353,6 +356,7 @@ class RunDaemon:
             if max_seconds is not None and time.monotonic() - started >= max_seconds:
                 return
             time.sleep(poll_interval_s)
+
 
 
 

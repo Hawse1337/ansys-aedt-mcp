@@ -398,3 +398,17 @@ class ExportReconnectTests(unittest.TestCase):
                                  client=FakeClient())
         adapter.reset_connection()
         self.assertEqual(calls, ["disconnect_from_aedt"])
+
+class SingletonLongRunTests(unittest.TestCase):
+    def test_live_owner_is_not_taken_over_after_a_long_run(self):
+        import time as _time
+
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp:
+            paths = DaemonPaths(tmp).ensure()
+            # owner alive, lock written 300 s ago: a 30-minute solve must not
+            # hand the campaign to a second daemon
+            paths.lock.write_text(
+                json.dumps({"pid": os.getpid(), "at": _time.time() - 300.0}),
+                encoding="utf-8",
+            )
+            self.assertFalse(paths.acquire_singleton())
