@@ -582,5 +582,36 @@ class ProbeRobustnessTests(unittest.TestCase):
         self.assertIn("pass setups=", str(ctx.exception))
 
 
+class WindowsAppControlWarningTests(unittest.TestCase):
+    """Smart App Control detection must be quiet unless SAC is actually enforced."""
+
+    def test_warns_when_sac_enforced(self):
+        fake_winreg = mock.MagicMock()
+        fake_winreg.OpenKey.return_value.__enter__.return_value = object()
+        fake_winreg.QueryValueEx.return_value = (1, 4)
+        with mock.patch.dict(sys.modules, {"winreg": fake_winreg}):
+            message = pyaedt_worker.windows_app_control_warning()
+        self.assertIsNotNone(message)
+        self.assertIn("Smart App Control", message)
+        self.assertIn("DesktopProxyLib.dll", message)
+
+    def test_silent_when_sac_off(self):
+        fake_winreg = mock.MagicMock()
+        fake_winreg.OpenKey.return_value.__enter__.return_value = object()
+        fake_winreg.QueryValueEx.return_value = (0, 4)
+        with mock.patch.dict(sys.modules, {"winreg": fake_winreg}):
+            self.assertIsNone(pyaedt_worker.windows_app_control_warning())
+
+    def test_silent_when_policy_key_missing(self):
+        fake_winreg = mock.MagicMock()
+        fake_winreg.OpenKey.side_effect = OSError("no key")
+        with mock.patch.dict(sys.modules, {"winreg": fake_winreg}):
+            self.assertIsNone(pyaedt_worker.windows_app_control_warning())
+
+    def test_silent_on_non_windows(self):
+        with mock.patch.object(pyaedt_worker.os, "name", "posix"):
+            self.assertIsNone(pyaedt_worker.windows_app_control_warning())
+
+
 if __name__ == "__main__":
     unittest.main()

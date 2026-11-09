@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import contextlib
 import os
@@ -21,6 +21,48 @@ def _bridge_configured_aedt_install() -> None:
 
 
 _bridge_configured_aedt_install()
+
+
+def windows_app_control_warning() -> str | None:
+    """Return a warning when Smart App Control is enforced on this machine.
+
+    PyAEDT's gRPC plugin loads ``PyDesktopPlugin.dll`` (signed by ANSYS Inc.)
+    from the AEDT install directory; that library depends on
+    ``DesktopProxyLib.dll``, which is unsigned. Smart App Control (and some
+    WDAC policies) can refuse that dependency with ``0xC0E90002`` /
+    "application control policy blocked this file", which then surfaces as an
+    unrelated gRPC failure. Detect the policy early and explain it once.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\CI\Policy",
+        ) as key:
+            state, _ = winreg.QueryValueEx(key, "VerifiedAndReputablePolicyState")
+    except Exception:
+        return None
+    try:
+        enforced = int(state) == 1
+    except (TypeError, ValueError):
+        return None
+    if not enforced:
+        return None
+    return (
+        "[aedt-hardening] Smart App Control is ON (VerifiedAndReputablePolicyState=1). "
+        "SAC may block the unsigned Ansys dependency DesktopProxyLib.dll "
+        "(error 0xC0E90002 / 'application control policy has blocked this file'), "
+        "after which AEDT calls fail with unrelated gRPC errors. "
+        "See docs/WINDOWS_APP_CONTROL.md for diagnosis and options."
+    )
+
+
+_APP_CONTROL_WARNING = windows_app_control_warning()
+if _APP_CONTROL_WARNING:
+    print(_APP_CONTROL_WARNING, file=sys.stderr, flush=True)
 
 # Install the project guard BEFORE anything can construct a PyAEDT application.
 # It rewrites a bare project name to the absolute path of the existing .aedt so
@@ -169,3 +211,4 @@ if __name__ == "__main__":
     # Compatibility mode handles one request and intentionally skips PyAEDT's
     # process-exit callback. WorkerClient uses the persistent --serve mode.
     exit_without_pyaedt_cleanup(main())
+
