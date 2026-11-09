@@ -280,6 +280,51 @@ def update_spec(
     return updated
 
 
+def resolve_frequencies(spec: dict[str, Any], override: list[float] | None = None) -> list[float]:
+    """Return the far-field frequencies to export for this run.
+
+    Order of precedence: explicit override, ``evaluation.frequencies_ghz``,
+    ``evaluation.frequency_sampling``, then the default ``[low, centre, high]``.
+    The result is capped by ``evaluation.max_frequency_points`` (default 9).
+    """
+    evaluation = spec.get("evaluation") or {}
+    band = spec["frequency_ghz"]
+    if override:
+        freqs = sorted({float(f) for f in override})
+    elif evaluation.get("frequencies_ghz"):
+        freqs = sorted({float(f) for f in evaluation["frequencies_ghz"]})
+    elif isinstance(evaluation.get("frequency_sampling"), dict):
+        sampling = evaluation["frequency_sampling"]
+        mode = str(sampling.get("mode", "linear")).lower()
+        points = int(sampling.get("points", 3))
+        if points < 2:
+            raise SpecError("frequency_sampling.points must be >= 2")
+        low, high = float(band[0]), float(band[1])
+        if mode == "linear":
+            freqs = [low + (high - low) * i / (points - 1) for i in range(points)]
+        elif mode == "log":
+            import math
+
+            ratio = (high / low) ** (1.0 / (points - 1))
+            freqs = [low * ratio ** i for i in range(points)]
+        else:
+            raise SpecError("frequency_sampling.mode must be linear or log")
+        freqs = sorted({round(f, 6) for f in freqs})
+    else:
+        low, high = float(band[0]), float(band[1])
+        freqs = [low, (low + high) / 2.0, high]
+    cap = int(evaluation.get("max_frequency_points", 9))
+    if len(freqs) > cap:
+        raise SpecError(
+            f"E_FREQ_POINT_BUDGET: {len(freqs)} frequencies requested but "
+            f"max_frequency_points={cap}"
+        )
+    out_of_band = [f for f in freqs if f < band[0] - 1e-9 or f > band[1] + 1e-9]
+    if out_of_band:
+        raise SpecError(f"frequencies outside the spec band: {out_of_band}")
+    return freqs
+
+
 def hard_metrics(spec: dict[str, Any]) -> list[dict[str, Any]]:
     return [m for m in spec.get("metrics", []) if m.get("hard", True)]
 

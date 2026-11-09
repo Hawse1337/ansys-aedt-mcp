@@ -160,6 +160,35 @@ CREATED → PREPARED → SOLVING → SOLVED → EXPORTING → VALIDATING → COM
 | `archive_query` | `best` 指向该 run（`feasible=false`，因无可行解）、`pareto_front=[]`、`ranked` 按目标排序 |
 | 旧解/未收敛解 | 两次被 `E_NOT_CONVERGED` 拒绝，未产出指标 |
 
+## 5C. 多频点远场与预算强制（P4-5/6，v1.11）
+
+### 多频点远场
+
+- 频点来源优先级：本次运行参数 `frequencies_ghz` → spec 的 `evaluation.frequencies_ghz` →
+  `evaluation.frequency_sampling`（linear/log + points）→ 默认 `[low, 中心, high]`；
+- 上限 `evaluation.max_frequency_points`（默认 9），超限报 `E_FREQ_POINT_BUDGET`；超出 spec 频段直接拒绝；
+- 导出键形如 `theta_phi0@4.8GHz`，运行时按频点分组为 `artifacts.farfield["4.8"]`；
+- 指标：每个频点都算增益/峰值角/纹波/副瓣，硬约束用**最差频点**判定，细节保留 `per_frequency`；
+- 频点在扫频里没有场数据时 → `E_FF_FREQ_UNAVAILABLE`（提示开启 Save Fields 或只用自适应频点）；
+- 频点列表进入 cache_key，换频点不会命中旧缓存。
+
+### 预算强制
+
+- `execution_policy.max_run_minutes` 现在真正生效：等待超时被 `min(timeout_s, 预算)` 截断；
+- 超预算 → 调用 `abort_analysis`（`stop_simulations(clean_stop=True)`）→ 运行标记 **FAILED / BUDGET_EXCEEDED**，
+  不会给出指标；
+- 与"求解超时"区分：超时且预算未到 → `RECOVERY_REQUIRED`（可能还在跑）；预算到 → 主动停。
+
+### 实机验证（AEDT 2026 R1）
+
+| 项 | 结果 |
+|---|---|
+| 预算（0.05 min = 3 s） | 9.1 s 后 FAILED：`BUDGET_EXCEEDED: exceeded max_run_minutes=0.05 and was stopped`，abort 返回 `stopped: true` |
+| 多频点（4.8/5.0/5.2 GHz，Discrete 扫频 save_fields） | **COMPLETED**（350.9 s），artifacts 里三个频点各一组 θ/φ CSV |
+| 指标 | `gain_h` 最差频点 1.39 dBi（过）、`ripple` 0.18 dB（过）、`s11` -6.59 dB（硬约束未过） |
+| 求解进程 | 求解期间 22 个 `hf3d` 进程池只有 1 个在算（实测 +3.83 s CPU/6 s），其余等待；求解结束全部自动退出 |
+| 清理 | 沙箱 AEDT 已全部关闭，机器无残留求解进程 |
+
 ## 6. 已知限制（下一阶段处理）
 
 1. **S11 带宽依赖导出对象**：不传 `sweep_name` 时 Touchstone 只含自适应解频点；要做真实带内判定必须传

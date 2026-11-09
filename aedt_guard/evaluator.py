@@ -211,6 +211,109 @@ def _compare(value: float, operator: str, target: float) -> bool:
     return abs(value - target) < 1e-9
 
 
+def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate a candidate whose far fields were exported at several frequencies.
+
+    ``artifacts["farfield"]`` maps frequency (GHz) to ``{"theta": path,
+    "phi": path}``. Per-frequency values are kept in the detail block; the
+    scalar used for hard constraints is the worst case across frequencies
+    (minimum gain, maximum ripple, maximum sidelobe, maximum beam drift).
+    """
+    evaluation = spec.get("evaluation", {})
+    band = tuple(spec["frequency_ghz"][:2])
+    exclusion = float(evaluation.get("main_lobe_exclusion_deg", 10))
+    horiz_theta = float(evaluation.get("horiz_theta_deg", 90))
+    mode = evaluation.get("realized_gain_mode", "gain_plus_mismatch")
+
+    result: dict[str, Any] = {"metrics": {}, "hard": {}, "unmet": [], "invalid": None}
+    farfield = artifacts.get("farfield") or {}
+    if not farfield:
+        result["invalid"] = "no farfield artifacts"
+        result["feasible"] = False
+        return result
+    try:
+        freqs, s11_db = read_touchstone(artifacts["s11"])
+        s11_info = s11_band(freqs, s11_db, band)
+        per_frequency: dict[str, Any] = {}
+        for label, paths in sorted(farfield.items(), key=lambda item: float(item[0])):
+            gain_freq = float(label)
+            theta, gain = read_curve_csv(paths["theta"])
+            peak, peak_theta = peak_and_beam(theta, gain)
+            horizontal = horizontal_level(theta, gain, theta_deg=horiz_theta)
+            s11_at_f = float(np.interp(gain_freq, freqs, s11_db))
+            realized = (
+                float(realized_gain(horizontal, s11_at_f))
+                if mode == "gain_plus_mismatch"
+                else horizontal
+            )
+            phi_gain = None
+            ripple_value = None
+            if paths.get("phi"):
+                phi_x, phi_y = read_curve_csv(paths["phi"], x_candidates=("Phi [deg]", "Theta [deg]"))
+                ripple_value = ripple(phi_x, phi_y)
+            per_frequency[f"{gain_freq:g}"] = {
+                "peak_gain": peak,
+                "peak_theta": peak_theta,
+                "realized_gain_h": realized,
+                "ripple": ripple_value,
+                "sll": sidelobe_level(theta, gain, exclusion),
+            }
+    except ArtifactError as exc:
+        result["invalid"] = str(exc)
+        result["feasible"] = False
+        return result
+
+    gains = [v["realized_gain_h"] for v in per_frequency.values()]
+    thetas = [v["peak_theta"] for v in per_frequency.values()]
+    slls = [v["sll"] for v in per_frequency.values() if not math.isnan(v["sll"])]
+    ripples = [v["ripple"] for v in per_frequency.values() if v["ripple"] is not None]
+    result["metrics"]["s11"] = s11_info
+    result["metrics"]["realized_gain_h"] = {
+        "value": float(min(gains)),
+        "per_frequency": {k: v["realized_gain_h"] for k, v in per_frequency.items()},
+        "frequencies_ghz": [float(k) for k in per_frequency],
+    }
+    result["metrics"]["peak_gain"] = {
+        "value": float(max(v["peak_gain"] for v in per_frequency.values())),
+        "per_frequency": {k: v["peak_gain"] for k, v in per_frequency.items()},
+    }
+    result["metrics"]["beam_theta"] = {
+        "value": float(max(thetas)),
+        "drift_deg": float(max(thetas) - min(thetas)),
+        "per_frequency": {k: v["peak_theta"] for k, v in per_frequency.items()},
+    }
+    if ripples:
+        result["metrics"]["ripple"] = {
+            "value": float(max(ripples)),
+            "per_frequency": {k: v["ripple"] for k, v in per_frequency.items() if v["ripple"] is not None},
+        }
+    if slls:
+        result["metrics"]["sll"] = {
+            "value": float(max(slls)),
+            "per_frequency": {k: v["sll"] for k, v in per_frequency.items() if not math.isnan(v["sll"])},
+        }
+
+    for metric in spec.get("metrics", []):
+        kind = metric["kind"]
+        if kind not in result["metrics"]:
+            continue
+        if kind == "s11":
+            value = result["metrics"]["s11"]["worst_db"]
+        else:
+            value = result["metrics"][kind]["value"]
+            if kind == "sll" and math.isnan(value):
+                result["hard"][metric["id"]] = False
+                if metric.get("hard", True):
+                    result["unmet"].append(metric["id"])
+                continue
+        passed = _compare(float(value), metric["operator"], float(metric["target"]))
+        result["hard"][metric["id"]] = passed
+        if not passed and metric.get("hard", True):
+            result["unmet"].append(metric["id"])
+    result["feasible"] = not result["unmet"]
+    return result
+
+
 def evaluate(artifacts: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
     """Evaluate one candidate from its exported artifacts.
 
@@ -218,7 +321,12 @@ def evaluate(artifacts: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
     phi angle -> far-field CSV), ``phi_cut`` (horizontal CSV) and
     ``frequency_ghz`` (frequency of the far-field exports; defaults to the band
     centre). Realized gain is computed at that frequency from Gain and S11.
+
+    When ``artifacts["farfield"]`` (multi-frequency layout) is present, the
+    per-frequency evaluator is used instead.
     """
+    if artifacts.get("farfield"):
+        return evaluate_frequencies(artifacts, spec)
     evaluation = spec.get("evaluation", {})
     band = tuple(spec["frequency_ghz"][:2])
     exclusion = float(evaluation.get("main_lobe_exclusion_deg", 10))

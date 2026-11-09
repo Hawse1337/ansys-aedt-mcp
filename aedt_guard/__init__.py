@@ -1,4 +1,4 @@
-"""Guarded-workflow layer for AEDT antenna campaigns.
+﻿"""Guarded-workflow layer for AEDT antenna campaigns.
 
 This package is pure Python and never talks to AEDT: it owns the design
 specification, the run/metrics store and the artifact-based evaluator. The MCP
@@ -25,6 +25,7 @@ from .spec import (
     hard_metrics,
     load_spec,
     new_spec,
+    resolve_frequencies,
     save_spec,
     soft_metrics,
     task_context,
@@ -43,6 +44,7 @@ __all__ = [
     "horizontal_level",
     "load_spec",
     "new_spec",
+    "resolve_frequencies",
     "passivity",
     "peak_and_beam",
     "read_curve_csv",
@@ -57,3 +59,4 @@ __all__ = [
     "update_spec",
     "validate_spec",
 ]
+

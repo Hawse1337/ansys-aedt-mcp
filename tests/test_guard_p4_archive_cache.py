@@ -96,7 +96,7 @@ class ConvergenceAdapter:
         _write_s1p(path)
         return {"path": str(path)}
 
-    def export_farfield(self, output_dir, cuts):
+    def export_farfield(self, output_dir, cuts, frequencies=None):
         theta = Path(output_dir) / "theta.csv"
         phi = Path(output_dir) / "phi.csv"
         _write_theta(theta)
@@ -325,6 +325,7 @@ class CacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

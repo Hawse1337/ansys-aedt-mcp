@@ -90,7 +90,7 @@ class FakeAdapter:
         _write_s1p(path)
         return {"path": str(path)}
 
-    def export_farfield(self, output_dir, cuts):
+    def export_farfield(self, output_dir, cuts, frequencies=None):
         self.calls.append("farfield")
         output_dir.mkdir(parents=True, exist_ok=True)
         theta = output_dir / "theta.csv"
@@ -301,5 +301,6 @@ class GuardedToolsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

@@ -48,9 +48,13 @@ class Adapter(Protocol):
 
     def export_touchstone(self, path: Path) -> dict[str, Any]: ...
 
-    def export_farfield(self, output_dir: Path, cuts: list[str]) -> dict[str, Any]: ...
+    def export_farfield(self, output_dir: Path, cuts: list[str],
+                        frequencies: list[float] | None = None) -> dict[str, Any]: ...
 
     def export_convergence(self, path: Path) -> dict[str, Any]: ...
+
+    def abort(self) -> dict[str, Any]:
+        """Best-effort stop of the running solve (budget enforcement)."""
 
 
 def named_metrics(result: dict[str, Any], spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -101,6 +105,7 @@ class CampaignRunner:
         timeout_s: float = 3600.0,
         poll_interval_s: float = 5.0,
         frequency_ghz: float | None = None,
+        frequencies: list[float] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         evaluator: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
         on_completed: Callable[[dict[str, Any]], None] | None = None,
@@ -115,6 +120,7 @@ class CampaignRunner:
         self.timeout_s = float(timeout_s)
         self.poll_interval_s = float(poll_interval_s)
         self.frequency_ghz = frequency_ghz
+        self.frequencies = list(frequencies) if frequencies else None
         self.sleep = sleep
         self.evaluator = evaluator
         self.on_completed = on_completed
@@ -126,12 +132,32 @@ class CampaignRunner:
         notes = json.dumps(self.stage_log, ensure_ascii=False)
         self.store.set_status(self.run_id, stage, notes=notes)
 
-    def _fail(self, stage: str, error: Any) -> None:
-        self._stage(stage, error=str(error)[:600])
+    def _abort_and_fail(self, message: str) -> None:
+        """Best-effort stop of a running solve, then mark the run failed."""
+        abort = getattr(self.adapter, "abort", None)
+        detail: dict[str, Any] = {}
+        if callable(abort):
+            try:
+                detail = dict(abort() or {})
+            except Exception as exc:  # noqa: BLE001
+                detail = {"abort_error": str(exc)[:200]}
+        self._fail(FAILED, message, **detail)
+
+    def _fail(self, stage: str, error: Any, **extra: Any) -> None:
+        self._stage(stage, error=str(error)[:600], **extra)
         self.store.set_status(self.run_id, stage, notes=json.dumps(self.stage_log, ensure_ascii=False))
 
     # -------------------------------------------------------------------- run
     def run(self) -> str:
+        policy = self.spec.get("execution_policy") or {}
+        budget_s = None
+        if policy.get("max_run_minutes"):
+            budget_s = float(policy["max_run_minutes"]) * 60.0
+        started = time.monotonic()
+
+        def budget_exceeded() -> bool:
+            return budget_s is not None and (time.monotonic() - started) >= budget_s
+
         try:
             pre = self.adapter.preflight()
         except Exception as exc:  # noqa: BLE001
@@ -150,17 +176,32 @@ class CampaignRunner:
         self._stage("SOLVING", started=bool(submitted.get("started")))
 
         try:
-            waited = self.adapter.wait(self.timeout_s, self.poll_interval_s)
+            waited = self.adapter.wait(
+                min(self.timeout_s, budget_s) if budget_s is not None else self.timeout_s,
+                self.poll_interval_s,
+            )
         except Exception as exc:  # noqa: BLE001
             self._fail(RECOVERY_REQUIRED, f"wait failed: {exc}")
             return RECOVERY_REQUIRED
         if waited.get("timed_out"):
+            if budget_exceeded():
+                self._abort_and_fail(
+                    f"BUDGET_EXCEEDED: run exceeded max_run_minutes="
+                    f"{policy.get('max_run_minutes')} and was stopped"
+                )
+                return FAILED
             self._fail(
                 RECOVERY_REQUIRED,
                 f"solver still running after {self.timeout_s:.0f}s; "
                 "poll again or restart AEDT before re-submitting",
             )
             return RECOVERY_REQUIRED
+        if budget_exceeded():
+            self._abort_and_fail(
+                f"BUDGET_EXCEEDED: run exceeded max_run_minutes="
+                f"{policy.get('max_run_minutes')} before post-processing"
+            )
+            return FAILED
         self._stage("SOLVED", poll_count=waited.get("poll_count"))
         return self._finish()
 
@@ -237,17 +278,29 @@ class CampaignRunner:
         try:
             touch = self.adapter.export_touchstone(self.artifact_dir / "result.s1p")
             artifacts["s11"] = str(touch.get("path") or self.artifact_dir / "result.s1p")
-            far = self.adapter.export_farfield(self.artifact_dir / "farfield", self.cuts)
-            theta = {
-                name: info.get("path")
-                for name, info in (far.get("cuts") or {}).items()
-                if str(name).startswith("theta")
-            }
-            phi = {
-                name: info.get("path")
-                for name, info in (far.get("cuts") or {}).items()
-                if str(name).startswith("phi")
-            }
+            far = self.adapter.export_farfield(
+                self.artifact_dir / "farfield", self.cuts, frequencies=self.frequencies
+            )
+            by_frequency: dict[str, dict[str, str]] = {}
+            singles: dict[str, str] = {}
+            for name, info in (far.get("cuts") or {}).items():
+                base, _, label = str(name).partition("@")
+                path = info.get("path")
+                if not path:
+                    continue
+                if label:
+                    key = label.replace("GHz", "").strip()
+                    slot = by_frequency.setdefault(key, {})
+                    if base.startswith("theta"):
+                        slot["theta"] = path
+                    elif base.startswith("phi"):
+                        slot["phi"] = path
+                else:
+                    singles[base] = path
+            if by_frequency:
+                artifacts["farfield"] = by_frequency
+            theta = {name: path for name, path in singles.items() if name.startswith("theta")}
+            phi = {name: path for name, path in singles.items() if name.startswith("phi")}
             if theta:
                 artifacts["theta_cuts"] = theta
             if phi:
@@ -289,5 +342,7 @@ class CampaignRunner:
             except Exception:  # noqa: BLE001 - archiving must not fail the run
                 pass
         return "COMPLETED"
+
+
 
 

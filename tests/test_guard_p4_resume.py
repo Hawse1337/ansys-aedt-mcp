@@ -82,7 +82,7 @@ class ResumeAdapter:
         _write_s1p(path)
         return {"path": str(path)}
 
-    def export_farfield(self, output_dir, cuts):
+    def export_farfield(self, output_dir, cuts, frequencies=None):
         self.calls.append("farfield")
         theta = Path(output_dir) / "theta.csv"
         phi = Path(output_dir) / "phi.csv"
@@ -245,4 +245,5 @@ class ResumeToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

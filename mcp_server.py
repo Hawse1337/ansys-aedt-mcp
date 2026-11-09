@@ -22,6 +22,7 @@ from aedt_guard import (
     hard_metrics,
     load_spec,
     new_spec,
+    resolve_frequencies,
     save_spec,
     task_context,
     update_spec,
@@ -1455,17 +1456,24 @@ class _GuardedAdapter:
             },
         )
 
-    def export_farfield(self, output_dir: Path, cuts: list[str]) -> dict[str, Any]:
-        return self._call(
-            "export_farfield_report",
-            {
-                "project_name": self.project_name,
-                "design_name": self.design_name,
-                "setup_name": self.setup_name,
-                "output_dir": str(output_dir),
-                "cuts": cuts,
-            },
-        )
+    def export_farfield(self, output_dir: Path, cuts: list[str],
+                        frequencies: list[float] | None = None) -> dict[str, Any]:
+        arguments = {
+            "project_name": self.project_name,
+            "design_name": self.design_name,
+            "setup_name": self.setup_name,
+            "output_dir": str(output_dir),
+            "cuts": cuts,
+        }
+        if self.sweep_name:
+            arguments["sweep_name"] = self.sweep_name
+        if frequencies:
+            arguments["frequencies_ghz"] = list(frequencies)
+        return self._call("export_farfield_report", arguments)
+
+    def abort(self) -> dict[str, Any]:
+        return self._call("abort_analysis", {"project_name": self.project_name,
+                                             "design_name": self.design_name})
 
     def export_convergence(self, path: Path) -> dict[str, Any]:
         return self._call(
@@ -1493,6 +1501,7 @@ def submit_guarded_run(
     port: int | None = None,
     frequency_ghz: float | None = None,
     sweep_name: str | None = None,
+    frequencies_ghz: list[float] | None = None,
 ) -> dict[str, Any]:
     """Submit one guarded run and return immediately with its run_id (v1.6).
 
@@ -1501,6 +1510,7 @@ def submit_guarded_run(
     marks the run COMPLETED. Query progress with ``get_run_status``.
     """
     spec, paths = _load_campaign(campaign_dir)
+    resolved_frequencies = resolve_frequencies(spec, frequencies_ghz)
     cache_key = _cache_key(
         project=project_name,
         design=design_name,
@@ -1509,6 +1519,7 @@ def submit_guarded_run(
         params=params or {},
         cuts=cuts or ["theta_phi0", "phi_theta90"],
         frequency_ghz=frequency_ghz,
+        frequencies_ghz=resolved_frequencies,
         sweep_name=sweep_name,
     )
     with Store(paths["db"]) as store:
@@ -1540,6 +1551,7 @@ def submit_guarded_run(
                 "params": params or {},
                 "cuts": cuts or ["theta_phi0", "phi_theta90"],
                 "frequency_ghz": frequency_ghz,
+                "frequencies_ghz": resolved_frequencies,
                 "created_utc": datetime.now(timezone.utc).isoformat(),
             },
             indent=2,
@@ -1610,6 +1622,7 @@ def submit_guarded_run(
                 timeout_s=timeout_s,
                 poll_interval_s=poll_interval_s,
                 frequency_ghz=frequency_ghz,
+                frequencies=resolved_frequencies,
                 on_completed=_on_completed,
             )
             runner.run()
@@ -1837,6 +1850,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 

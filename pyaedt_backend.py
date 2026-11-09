@@ -32,6 +32,7 @@ _HFSS_COMMANDS = {
     "start_analysis",
     "analysis_status",
     "build_wr90_waveguide",
+    "abort_analysis",
     # v1.5 guarded-workflow extensions (additive)
     "preflight_design",
     "finalize_solve",
@@ -550,6 +551,20 @@ class PyAedtBackend:
             }
 
         # --- v1.5 guarded-workflow extensions (additive; no change to old commands) ---
+        if command == "abort_analysis":
+            stop = getattr(app, "stop_simulations", None)
+            if not callable(stop):
+                raise BackendCommandError(
+                    "abort_analysis is unsupported by this PyAEDT build (no stop_simulations)"
+                )
+            detail = stop(clean_stop=True)
+            return {
+                "target": _target_dict(target),
+                "project_name": project_name,
+                "design_name": design_name,
+                "stopped": True,
+                "detail": str(detail)[:200],
+            }
         if command == "preflight_design":
             return self._preflight_design(app, target, arguments)
         if command == "finalize_solve":
@@ -748,34 +763,69 @@ class PyAedtBackend:
         if unknown:
             raise BackendCommandError("unknown cuts %s; choose from %s" % (unknown, sorted(presets)))
         Path(out_dir).mkdir(parents=True, exist_ok=True)
+        sweep_name = _optional_text(arguments, "sweep_name") or None
+        raw_frequencies = arguments.get("frequencies_ghz")
+        if raw_frequencies is None:
+            frequencies: list[float | None] = [None]
+        elif isinstance(raw_frequencies, (int, float)):
+            frequencies = [float(raw_frequencies)]
+        else:
+            frequencies = [float(f) for f in raw_frequencies]
         results: dict[str, Any] = {}
-        for cut in cuts:
-            variations, sweep = presets[str(cut)]
-            rep = post.create_report(
-                expressions=["dB(GainTotal)"],
-                setup_sweep_name="%s : LastAdaptive" % setup_name,
-                primary_sweep_variable=sweep,
-                report_category="Far Fields",
-                variations=variations,
-                plot_type="Rectangular Plot",
-            )
-            report_name = getattr(rep, "name", None) or str(rep)
-            exported = Path(post.export_report_to_csv(out_dir, report_name))
-            rows = 0
-            if exported.is_file():
-                try:
-                    with exported.open(encoding="utf-8") as handle:
-                        rows = sum(1 for _ in handle)
-                except Exception:
-                    rows = 0
-            results[str(cut)] = {
-                "report_name": report_name,
-                "path": str(exported),
-                "exists": exported.is_file(),
-                "rows": rows,
-                "non_empty": rows > 1,
-            }
+        unavailable: list[float] = []
+        for frequency in frequencies:
+            at_frequency: list[bool] = []
+            for cut in cuts:
+                variations, sweep = presets[str(cut)]
+                if frequency is None:
+                    setup_sweep = "%s : LastAdaptive" % setup_name
+                    variant = variations
+                    suffix = ""
+                else:
+                    setup_sweep = (
+                        "%s : %s" % (setup_name, sweep_name)
+                        if sweep_name
+                        else "%s : LastAdaptive" % setup_name
+                    )
+                    variant = {**variations, "Freq": ["%gGHz" % frequency]}
+                    suffix = "@%gGHz" % frequency
+                rep = post.create_report(
+                    expressions=["dB(GainTotal)"],
+                    setup_sweep_name=setup_sweep,
+                    primary_sweep_variable=sweep,
+                    report_category="Far Fields",
+                    variations=variant,
+                    plot_type="Rectangular Plot",
+                )
+                report_name = getattr(rep, "name", None) or str(rep)
+                exported = Path(post.export_report_to_csv(out_dir, report_name))
+                rows = 0
+                if exported.is_file():
+                    try:
+                        with exported.open(encoding="utf-8") as handle:
+                            rows = sum(1 for _ in handle)
+                    except Exception:
+                        rows = 0
+                results["%s%s" % (cut, suffix)] = {
+                    "report_name": report_name,
+                    "path": str(exported),
+                    "exists": exported.is_file(),
+                    "rows": rows,
+                    "non_empty": rows > 1,
+                    "frequency_ghz": frequency,
+                }
+                at_frequency.append(rows > 1)
+            if frequency is not None and not any(at_frequency):
+                unavailable.append(float(frequency))
         empty = [k for k, v in results.items() if not v["non_empty"]]
+        if unavailable:
+            raise BackendCommandError(
+                "E_FF_FREQ_UNAVAILABLE: no radiated fields exported at %s GHz. "
+                "An HFSS sweep only stores far fields at frequencies where fields "
+                "were saved (enable Save Fields on the sweep) or at the adaptive "
+                "solution frequency; otherwise limit frequencies_ghz to the "
+                "adaptive frequency." % ", ".join("%g" % f for f in unavailable)
+            )
         if empty:
             raise BackendCommandError(
                 "far-field export produced empty report(s) %s (E_REPORT_EMPTY); "
@@ -787,6 +837,7 @@ class PyAedtBackend:
             "setup_name": setup_name,
             "output_dir": out_dir,
             "cuts": results,
+            "frequencies_ghz": [f for f in frequencies if f is not None] or None,
             "non_empty": True,
             "note": "Non-empty CSV proves the report has rows, not that the far field "
                     "belongs to the latest solve; pair with finalize_solve evidence.",
@@ -882,3 +933,4 @@ class PyAedtBackend:
             "remaining": [str(item) for item in _read_value(desktop, "project_list")],
             "saved_before_close": save,
         }
+
