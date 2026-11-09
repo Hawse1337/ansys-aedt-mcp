@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+os.environ.setdefault("AEDT_GUARD_NO_DAEMON", "1")
 import tempfile
 import time
 import unittest
@@ -176,6 +177,7 @@ class GuardedRunnerTests(unittest.TestCase):
 
 class GuardedToolsTests(unittest.TestCase):
     def setUp(self):
+        os.environ["AEDT_GUARD_NO_DAEMON"] = "1"
         self.tmp = tempfile.TemporaryDirectory(dir=os.getcwd())
         self.campaign = str(Path(self.tmp.name) / "camp")
 

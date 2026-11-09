@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+os.environ.setdefault("AEDT_GUARD_NO_DAEMON", "1")
 import tempfile
 import time
 import unittest

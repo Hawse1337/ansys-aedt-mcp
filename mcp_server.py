@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import subprocess
+import sys
 import os
 import re
 import threading
@@ -1450,6 +1452,8 @@ def submit_guarded_run(
                 "project_name": project_name,
                 "design_name": design_name,
                 "setup_name": setup_name,
+                "pid": pid,
+                "port": port,
             },
             status="CREATED",
             artifact_dir=str(artifact_dir),
@@ -1477,9 +1481,46 @@ def submit_guarded_run(
         client=worker_client,
     )
 
+    request_payload = {
+        "run_id": run_id,
+        "project_name": project_name,
+        "design_name": design_name,
+        "setup_name": setup_name,
+        "params": params or {},
+        "cuts": list(cuts or ["theta_phi0", "phi_theta90"]),
+        "frequency_ghz": frequency_ghz,
+        "frequencies_ghz": resolved_frequencies,
+        "sweep_name": sweep_name,
+        "solver_settings": solver,
+        "run_token": str(run_token),
+        "pid": pid,
+        "port": port,
+        "worker_timeout": worker_timeout,
+        "timeout_s": timeout_s,
+        "poll_interval_s": poll_interval_s,
+    }
+    daemon_ready = False
+    try:
+        from aedt_guard.daemon import DaemonPaths
+
+        DaemonPaths(paths["root"]).ensure().write_request(request_payload)
+        daemon_ready = _ensure_daemon(paths["root"])
+    except Exception:  # noqa: BLE001 - fall back to the in-process runner
+        daemon_ready = False
+    if daemon_ready:
+        return {
+            "run_id": run_id,
+            "status": "QUEUED",
+            "executor": "daemon",
+            "artifact_dir": str(artifact_dir),
+            "spec_version": spec["version"],
+            "frequencies_ghz": resolved_frequencies,
+            "solver_settings": solver,
+            "note": "queued for the resident daemon; poll get_run_status until a terminal state",
+        }
+
     def _run_in_background() -> None:
         store = Store(paths["db"])
-
         def _on_completed(payload: dict[str, Any]) -> None:
             commit_best(
                 paths["root"],
@@ -1576,6 +1617,36 @@ def get_run_status(campaign_dir: str, run_id: str | None = None) -> dict[str, An
         "stage_log": stage_log,
         "terminal": detail["status"] in {"COMPLETED", "FAILED", "RECOVERY_REQUIRED"},
     }
+
+
+def _ensure_daemon(campaign_root: Path) -> bool:
+    """Start the resident run daemon for this campaign when it is not running."""
+    from aedt_guard.daemon import DaemonPaths
+
+    paths = DaemonPaths(campaign_root)
+    if paths.alive().get("alive"):
+        return True
+    if os.environ.get("AEDT_GUARD_NO_DAEMON"):
+        return False
+    script = Path(__file__).with_name("guard_daemon.py")
+    if not script.is_file():
+        return False
+    paths.ensure()
+    try:
+        with paths.log.open("ab") as log:
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+            subprocess.Popen(
+                [sys.executable, str(script), "--campaign", str(paths.root)],
+                cwd=str(script.parent),
+                stdout=log,
+                stderr=log,
+                creationflags=flags,
+            )
+        return True
+    except Exception:
+        return False
 
 
 def _cache_key(**fields: Any) -> str:
@@ -1744,6 +1815,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 

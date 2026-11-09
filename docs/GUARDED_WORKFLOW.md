@@ -219,6 +219,35 @@ CREATED → PREPARED → SOLVING → SOLVED → EXPORTING → VALIDATING → COM
 | 1 核 | 350.9 s | gain 1.3882630552402984 dBi / s11 -6.589 dB |
 | 4 核 | **40.1 s** | gain 1.3882630552402984 dBi / s11 -6.589 dB（**逐位相同**） |
 
+## 5E. 常驻运行守护进程（v1.13）
+
+`submit_guarded_run` 默认把请求交给**常驻 daemon**，而不是 MCP 进程内的线程：
+
+```
+<campaign>/daemon/requests/<run_id>.json   待处理请求
+<campaign>/daemon/claims/<run_id>.json     认领标记（同一 run 只被一个 daemon 处理）
+<campaign>/daemon/heartbeat.json           {pid, started_utc, updated_utc, current_run}
+<campaign>/daemon/daemon.lock              单例锁（pid + 时间戳）
+<campaign>/daemon/daemon.log               daemon 输出
+```
+
+| 行为 | 说明 |
+|---|---|
+| 启动方式 | `submit_guarded_run` 检测心跳，不在运行则 `python guard_daemon.py --campaign <dir>` 拉起（`AEDT_GUARD_NO_DAEMON=1` 可禁用并回退到线程） |
+| 单例 | 心跳存活或锁内 pid 仍活 → 新实例直接退出 |
+| 恢复 | 每次启动先扫描非终态 run，`SOLVING` 先等求解器空闲，再 **resume（不重算）** |
+| 幂等 | 请求对应的 run 已是终态（含 `RECOVERY_REQUIRED`）→ 丢弃请求，不重复执行 |
+| 环境 | 手工启动时自动把 `<campaign>/projects` 加入 `AEDT_GUARD_SEARCH_DIRS` |
+
+### 实机验证（AEDT 2026 R1，5 GHz 三频点偶极子，4 核）
+
+| 场景 | 结果 |
+|---|---|
+| 正常提交 | `status=QUEUED, executor=daemon` → COMPLETED（约 40 s），指标与线程模式一致 |
+| 求解中杀掉 daemon（`taskkill /F`） | run 停在 `SOLVING`，请求文件留在队列 |
+| 求解器结束后启动新 daemon | 自动恢复：阶段 `PREPARED, SOLVING, EXPORTING, VALIDATING, COMPLETED`（**只有一个 SOLVING**，未重算），指标正常产出 |
+| 终态请求 | 被丢弃（`skipped_terminal`），不会反复重跑 |
+
 ## 6. 已知限制（下一阶段处理）
 
 1. **S11 带宽依赖导出对象**：不传 `sweep_name` 时 Touchstone 只含自适应解频点；要做真实带内判定必须传

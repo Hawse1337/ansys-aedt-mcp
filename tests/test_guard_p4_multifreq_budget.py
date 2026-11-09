@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+os.environ.setdefault("AEDT_GUARD_NO_DAEMON", "1")
 import tempfile
 import time
 import unittest
@@ -215,6 +216,7 @@ class BudgetTests(unittest.TestCase):
 
 class MultiFrequencyToolTests(unittest.TestCase):
     def setUp(self):
+        os.environ["AEDT_GUARD_NO_DAEMON"] = "1"
         self.tmp = tempfile.TemporaryDirectory(dir=os.getcwd())
         self.campaign = str(Path(self.tmp.name) / "camp")
         mcp_server.spec_create(self.campaign, "lens", "metal_lens", [24.0, 30.0], _metrics())
