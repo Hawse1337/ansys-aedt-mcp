@@ -10,7 +10,6 @@ from worker_client import WorkerClient
 
 
 _AEDT_PROCESS_NAME = "ansysedt.exe"
-_LOCAL_ADDRESSES = {"127.0.0.1", "::1", "0.0.0.0", "::"}
 _VERSION_PATTERN = re.compile(r"[\\/]v(?P<code>\d{3})[\\/]", re.IGNORECASE)
 
 
@@ -56,6 +55,20 @@ def _connection_address(connection: Any) -> tuple[str | None, int | None]:
     return str(ip) if ip is not None else None, port if isinstance(port, int) else None
 
 
+def _configured_grpc_port(command_line: Any) -> int | None:
+    """Read a launch argument as a hint, never as proof that a server is ready."""
+    if not isinstance(command_line, (tuple, list)):
+        return None
+    for index, argument in enumerate(command_line[:-1]):
+        if isinstance(argument, str) and argument.lower() == "-grpcsrv":
+            value = command_line[index + 1]
+            if isinstance(value, str) and value.isascii() and value.isdecimal():
+                port = int(value)
+                if 0 < port <= 65535:
+                    return port
+    return None
+
+
 class SessionDiscovery:
     def __init__(
         self,
@@ -70,7 +83,7 @@ class SessionDiscovery:
 
     def list_sessions(self) -> list[dict[str, Any]]:
         process_records: dict[int, dict[str, Any]] = {}
-        attrs = ["pid", "name", "exe", "create_time"]
+        attrs = ["pid", "name", "exe", "create_time", "cmdline"]
         try:
             processes = self._process_iter(attrs)
             for process in processes:
@@ -80,7 +93,7 @@ class SessionDiscovery:
                     continue
                 pid = info.get("pid") if isinstance(info, dict) else None
                 name = info.get("name") if isinstance(info, dict) else None
-                if not isinstance(pid, int) or not isinstance(name, str):
+                if type(pid) is not int or pid <= 0 or not isinstance(name, str):
                     continue
                 if name.lower() != _AEDT_PROCESS_NAME:
                     continue
@@ -92,6 +105,9 @@ class SessionDiscovery:
                     "started_at": _started_at(info.get("create_time")),
                     "listening_ports": [],
                 }
+                configured_port = _configured_grpc_port(info.get("cmdline"))
+                if configured_port is not None:
+                    process_records[pid]["configured_grpc_port"] = configured_port
         except Exception:
             return []
 
@@ -106,8 +122,11 @@ class SessionDiscovery:
             pid = getattr(connection, "pid", None)
             if pid not in process_records or str(getattr(connection, "status", "")).upper() != "LISTEN":
                 continue
-            ip, port = _connection_address(connection)
-            if ip not in _LOCAL_ADDRESSES or port is None:
+            _, port = _connection_address(connection)
+            # A listener owned by this PID may bind to a local LAN address,
+            # not only loopback/wildcard. An empty list is not proof of absence
+            # when psutil cannot enumerate sockets on a particular machine.
+            if type(port) is not int or not 0 < port <= 65535:
                 continue
             process_records[pid]["listening_ports"].append(port)
 

@@ -31,8 +31,9 @@ try:
     import aedt_project_guard
 
     aedt_project_guard.install()
-except Exception as _guard_exc:  # never let the guard itself break the broker
+except Exception as _guard_exc:
     print("[aedt-guard] install failed: %s" % _guard_exc, file=sys.stderr, flush=True)
+    raise RuntimeError('Project guard unavailable; refusing unguarded AEDT operations') from _guard_exc
 
 from aedt_close_watcher import AedtCloseWatcher
 from pyaedt_backend import BackendCommandError, PyAedtBackend
@@ -132,6 +133,15 @@ def run_stream(
                     backend.release()
             except Exception as exc:
                 sys.stderr.write(f"AEDT broker release failed: {exc}\n")
+        # v1.5: never let a hard exit lose buffered protocol/log output.
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
 
 
 def main() -> int:

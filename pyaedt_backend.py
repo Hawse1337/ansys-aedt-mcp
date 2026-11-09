@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+from contextlib import contextmanager
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from aedt_target import AedtTarget
@@ -28,6 +32,10 @@ _HFSS_COMMANDS = {
     "start_analysis",
     "analysis_status",
     "build_wr90_waveguide",
+    # v1.5 guarded-workflow extensions (additive)
+    "preflight_design",
+    "finalize_solve",
+    "export_farfield_report",
 }
 _SOLUTION_TYPES = {
     "DrivenModal": "Modal",
@@ -40,10 +48,208 @@ _SOLUTION_TYPES = {
 }
 
 
-def _default_desktop_factory(**kwargs: Any) -> Any:
-    from ansys.aedt.core import Desktop
+_ATTACH_LOCK = threading.RLock()
+_AUDITED_PYAEDT_VERSION = "1.9.0"
 
-    return Desktop(**kwargs)
+
+def _existing_target_owner(kwargs: Mapping[str, Any]) -> tuple[int, float]:
+    """Prove the explicit local target exists without invoking a vendor client."""
+    import psutil
+
+    pid, port = kwargs.get("aedt_process_id"), kwargs.get("port")
+    if kwargs.get("new_desktop") is not False or bool(pid) == bool(port):
+        raise BackendCommandError("attach requires new_desktop=False and exactly one explicit PID or port")
+    if kwargs.get("machine") not in (None, "", "localhost", "127.0.0.1", "::1"):
+        raise BackendCommandError("this attach-only broker supports local AEDT targets only")
+    if pid:
+        if type(pid) is not int or pid <= 0:
+            raise BackendCommandError("invalid explicit AEDT PID")
+    else:
+        if type(port) is not int or not 0 < port <= 65535:
+            raise BackendCommandError("invalid explicit AEDT port")
+        try:
+            owners = set()
+            for connection in psutil.net_connections(kind="tcp"):
+                address = connection.laddr
+                address_port = getattr(address, "port", None)
+                if address_port is None and isinstance(address, tuple) and len(address) >= 2:
+                    address_port = address[1]
+                if str(connection.status).upper() == "LISTEN" and address_port == port:
+                    if type(connection.pid) is not int or connection.pid <= 0:
+                        raise BackendCommandError("listener owner is unknown; use a verified explicit AEDT PID")
+                    owners.add(connection.pid)
+            if len(owners) != 1:
+                raise BackendCommandError(
+                    f"cannot prove a unique AEDT listener on port {port}; inspect sessions and use an explicit PID"
+                )
+            pid = owners.pop()
+        except BackendCommandError:
+            raise
+        except Exception as exc:
+            raise BackendCommandError("cannot inspect listener ownership; use a verified explicit AEDT PID") from exc
+    try:
+        process = psutil.Process(pid)
+        if process.name().lower() not in {"ansysedt.exe", "ansysedt"}:
+            raise BackendCommandError(f"PID {pid} does not belong to AEDT")
+        return pid, process.create_time()
+    except BackendCommandError:
+        raise
+    except Exception as exc:
+        raise BackendCommandError(f"cannot verify existing AEDT PID {pid}; no attach or launch was attempted") from exc
+
+
+def _audited_desktop_module() -> Any:
+    from importlib.metadata import version
+    if version("pyaedt") != _AUDITED_PYAEDT_VERSION:
+        raise BackendCommandError(
+            f"attach-only protection was audited for PyAEDT {_AUDITED_PYAEDT_VERSION}; "
+            "use that version or review the changed Desktop launch paths before enabling another version"
+        )
+    import ansys.aedt.core.desktop as desktop_module
+    return desktop_module
+
+
+def _pid_launch_hints(pid: int) -> tuple[int | None, bool]:
+    """Read the verified process's command line, without treating it as readiness.
+
+    Windows socket enumeration may omit an AEDT listener. The explicit PID and
+    its -grpcsrv argument let us make one attach-only handshake; the native
+    result must still report the same PID and port before this factory returns.
+    """
+    import psutil
+    try:
+        command_line = psutil.Process(pid).cmdline()
+    except Exception:
+        return None, False
+    if not isinstance(command_line, (tuple, list)):
+        return None, False
+    non_graphical = any(isinstance(value,str) and value.lower() == "-ng" for value in command_line)
+    for index, argument in enumerate(command_line[:-1]):
+        if isinstance(argument,str) and argument.lower() == "-grpcsrv":
+            value = command_line[index+1]
+            if isinstance(value,str) and value.isascii() and value.isdecimal() and 0 < int(value) <= 65535:
+                return int(value), non_graphical
+    return None, non_graphical
+
+
+@contextmanager
+def _attach_only_desktop(module: Any, kwargs: Mapping[str, Any], *,
+                         verified_owner: tuple[int, float] | None = None,
+                         grpc_port_hint: int | None = None):
+    """Block the audited vendor fallback paths for this one Desktop constructor.
+
+    PyAEDT 1.9 can set new_desktop=True when its own session discovery misses a
+    port. Do not let a health check spawn AEDT. Restore methods on every exit;
+    the broker serializes calls, and this process-local lock covers this patch.
+    Arbitrary run_python_code calls are outside this narrow protection.
+    """
+    cls = module.Desktop
+    names = ("_validate_port", "_Desktop__initialize", "_Desktop__dispatch_win32", "_Desktop__run_student", "check_starting_mode")
+    if not callable(getattr(module, "launch_aedt", None)) or any(not callable(getattr(cls, name, None)) for name in names):
+        raise BackendCommandError("PyAEDT Desktop layout differs from the audited attach-only implementation")
+    old = {name: getattr(cls, name) for name in names}
+    old_launch = module.launch_aedt
+
+    def refuse_launch(*args: Any, **options: Any):
+        raise BackendCommandError("PyAEDT attempted a fallback launch; attach-only protection refused it")
+
+    def check_starting_mode(desktop: Any):
+        if grpc_port_hint is not None:
+            if desktop.new_desktop:
+                refuse_launch()
+            # Avoid a second vendor process/socket discovery. Its false
+            # negatives can incorrectly select COM for an existing -ng server.
+            desktop.port = grpc_port_hint
+            desktop.is_grpc_api = True
+            desktop._Desktop__starting_mode = "grpc"
+            return
+        return old["check_starting_mode"](desktop)
+
+    def validate_port(desktop: Any):
+        if desktop.new_desktop or not desktop.port:
+            raise BackendCommandError("PyAEDT attempted to allocate a desktop or change the explicit attach target")
+        if kwargs.get("port") and desktop.port != kwargs["port"]:
+            raise BackendCommandError("PyAEDT changed the requested gRPC port")
+        if grpc_port_hint is not None and desktop.port != grpc_port_hint:
+            raise BackendCommandError("PyAEDT changed the verified PID's gRPC port hint")
+        # Bypass vendor all_active_sessions(), whose false negatives otherwise
+        # switch the constructor into launch mode. Socket ownership was proved.
+        if verified_owner is not None:
+            actual_owner = _existing_target_owner({"new_desktop": False, "aedt_process_id": verified_owner[0]})
+            if actual_owner != verified_owner:
+                raise BackendCommandError("AEDT process identity changed before the attach handshake")
+        else:
+            _existing_target_owner({"new_desktop": False, "port": desktop.port})
+        return desktop.port
+
+    def initialize(desktop: Any, new_desktop_required: bool | None = None):
+        if desktop.new_desktop or new_desktop_required:
+            refuse_launch()
+        if not desktop.is_grpc_api:
+            # __init_dotnet subsequently binds the ROT moniker for the exact PID.
+            # Load COM utilities but skip CreateObject(version), which can create
+            # an application if no registered active object remains.
+            if not kwargs.get("aedt_process_id"):
+                raise BackendCommandError("COM attach requires an explicit verified PID")
+            from ansys.aedt.core.internal.clr_module import _clr
+            if _clr is None:
+                raise BackendCommandError("COM attach requires ansys-pythonnet; install it or use a verified gRPC port")
+            _clr.AddReference("Ansys.Ansoft.CoreCOMScripting")
+            com = __import__("Ansys.Ansoft.CoreCOMScripting")
+            desktop.COMUtil = com.Ansoft.CoreCOMScripting.Util.COMUtil
+            return None
+        return old["_Desktop__initialize"](desktop, new_desktop_required=False)
+
+    try:
+        module.launch_aedt = refuse_launch
+        cls._validate_port = validate_port
+        cls.check_starting_mode = check_starting_mode
+        cls._Desktop__initialize = initialize
+        cls._Desktop__dispatch_win32 = refuse_launch
+        cls._Desktop__run_student = refuse_launch
+        yield
+    finally:
+        module.launch_aedt = old_launch
+        for name, method in old.items():
+            setattr(cls, name, method)
+
+
+def _default_desktop_factory(**kwargs: Any) -> Any:
+    # Environment variables silently override explicit targets in PyAEDT.
+    for name in ("PYAEDT_PROCESS_ID", "PYAEDT_DESKTOP_PORT"):
+        if os.environ.get(name) not in (None, "", "0"):
+            raise BackendCommandError(f"unset {name}; this broker requires its explicit PID/port to remain authoritative")
+    for name in ("PYAEDT_DOC_GENERATION", "PYAEDT_NON_GRAPHICAL"):
+        if os.environ.get(name, "").lower() in ("true", "1", "t"):
+            raise BackendCommandError(f"unset {name} before using the attach-only broker")
+    configured_version = os.environ.get("PYAEDT_DESKTOP_VERSION")
+    if configured_version and configured_version != kwargs.get("version"):
+        raise BackendCommandError("PYAEDT_DESKTOP_VERSION conflicts with the explicit AEDT version")
+    with _ATTACH_LOCK:
+        expected_pid, expected_started = _existing_target_owner(kwargs)
+        configured_port, actual_non_graphical = _pid_launch_hints(expected_pid)
+        expected_port = kwargs.get("port") or configured_port
+        if kwargs.get("port") and configured_port is not None and kwargs["port"] != configured_port:
+            raise BackendCommandError("requested gRPC port differs from the verified process's launch argument")
+        vendor_kwargs = dict(kwargs)
+        if configured_port is not None:
+            vendor_kwargs["non_graphical"] = actual_non_graphical
+        module = _audited_desktop_module()
+        settings = module.settings
+        if settings.remote_rpc_session or settings.use_lsf_scheduler:
+            raise BackendCommandError("remote/LSF settings are incompatible with this local attach-only broker")
+        with _attach_only_desktop(module, kwargs, verified_owner=(expected_pid, expected_started), grpc_port_hint=expected_port):
+            desktop = module.Desktop(**vendor_kwargs)
+        if getattr(desktop, "aedt_process_id", None) != expected_pid:
+            raise BackendCommandError("PyAEDT returned a different AEDT PID; no project operation was performed")
+        if expected_port is not None and getattr(desktop, "port", None) != expected_port:
+            raise BackendCommandError("PyAEDT returned a different AEDT port; no project operation was performed")
+        if kwargs.get("version") and str(getattr(desktop, "aedt_version_id", "")) != kwargs["version"]:
+            raise BackendCommandError("PyAEDT returned a different AEDT version; no project operation was performed")
+        actual_pid, actual_started = _existing_target_owner({"new_desktop": False, "aedt_process_id": expected_pid})
+        if (actual_pid, actual_started) != (expected_pid, expected_started):
+            raise BackendCommandError("AEDT process identity changed during attach; no project operation was performed")
+        return desktop
 
 
 def _default_hfss_factory(**kwargs: Any) -> Any:
@@ -327,7 +533,18 @@ class PyAedtBackend:
                 "setup_name": setup_name,
                 "blocking": blocking,
                 "started": started,
+                "solver_completion_confirmed": False,
+                "convergence_confirmed": False,
+                "completion_evidence_required": "Inspect the native profile and convergence for this exact submission; API success is not completion.",
             }
+
+        # --- v1.5 guarded-workflow extensions (additive; no change to old commands) ---
+        if command == "preflight_design":
+            return self._preflight_design(app, target, arguments)
+        if command == "finalize_solve":
+            return self._finalize_solve(app, target, arguments)
+        if command == "export_farfield_report":
+            return self._export_farfield_report(app, target, arguments)
 
         running = bool(_read_value(app, "are_there_simulations_running"))
         setups = list(app.get_setups())
@@ -337,7 +554,233 @@ class PyAedtBackend:
             "design_name": design_name,
             "running": running,
             "setups": [str(item) for item in setups],
+            "solver_completion_confirmed": False,
+            "convergence_confirmed": False,
+            "activity_scope": "desktop",
+            "completion_evidence_required": "Idle state and existing results do not establish completion of the latest solve.",
         }
+
+    # ------------------------------------------------------------------
+    # v1.5 guarded-workflow helpers (new commands only; additive)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _probe_solution_data(app: Any, setup_name: str) -> bool | None:
+        """True/False/None: does the named setup have solution data?
+
+        None means the probe itself was inconclusive (attribute/API missing or
+        an unexpected vendor error such as KeyError('HFSS Terminal Network')).
+        """
+        probe: bool | None = None
+        try:
+            setups = getattr(app, "setups", None) or []
+            known = []
+            for setup in setups:
+                name = str(getattr(setup, "name", ""))
+                if name != str(setup_name):
+                    continue
+                solved = getattr(setup, "is_solved", None)
+                if solved is None:
+                    continue
+                known.append(bool(solved))
+            if known:
+                return any(known)
+        except Exception:
+            # vendor internals can raise for Terminal/mixed solution types
+            return None
+        post = getattr(app, "post", None)
+        if post is None:
+            return None
+        try:
+            data = post.get_solution_data(
+                expressions=["dB(S(1,1))"],
+                setup_sweep_name="%s : LastAdaptive" % setup_name,
+                report_category="Modal Solution Data",
+            )
+        except Exception:
+            return False
+        if isinstance(data, bool):
+            return data
+        if getattr(data, "full_matrix_imag", None) is not None or getattr(
+            data, "full_matrix_real_imag", None
+        ):
+            return True
+        return probe
+
+    def _preflight_design(
+        self,
+        app: Any,
+        target: AedtTarget,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        attempts = arguments.get("validate_attempts", 3)
+        try:
+            attempts = max(1, int(attempts))
+        except (TypeError, ValueError):
+            raise BackendCommandError("validate_attempts must be a positive integer")
+        setup_name = _optional_text(arguments, "setup_name") or None
+        require_ff_sphere = bool(arguments.get("require_ff_sphere", True))
+
+        validation_passed = False
+        last_error: str | None = None
+        validate = getattr(app, "validate_simple", None)
+        for _ in range(attempts):
+            try:
+                if callable(validate) and bool(validate()):
+                    validation_passed = True
+                    break
+            except Exception as exc:  # noqa: BLE001 - report, then retry
+                last_error = repr(exc)[:200]
+            time.sleep(2.0)
+
+        ff_sphere_present: bool | None = None
+        try:
+            field_setups = getattr(app, "field_setup_names", None)
+            if isinstance(field_setups, (list, tuple)):
+                ff_sphere_present = bool(len(field_setups))
+        except Exception:
+            ff_sphere_present = None
+
+        solution_data_present: bool | None = None
+        if setup_name:
+            solution_data_present = self._probe_solution_data(app, setup_name)
+
+        if require_ff_sphere and ff_sphere_present is False:
+            raise BackendCommandError(
+                "preflight_design refused submission: no infinite-sphere/radiation "
+                "setup found (E_FF_SPHERE_MISSING). Insert an infinite sphere before "
+                "solving if far fields are required, or set require_ff_sphere=false. "
+                "Note: an infinite sphere also requires an existing radiation "
+                "boundary (open region); AEDT refuses the sphere insertion without one."
+            )
+        if not validation_passed:
+            raise BackendCommandError(
+                "preflight_design refused submission: geometry validation failed "
+                "after %d attempt(s) (E_VALIDATE_FALSE): %s"
+                % (attempts, last_error or "unknown reason")
+            )
+        return {
+            "target": _target_dict(target),
+            "validation_passed": validation_passed,
+            "validation_attempts": attempts,
+            "ff_sphere_present": ff_sphere_present,
+            "ff_sphere_required": require_ff_sphere,
+            "solution_data_present_before_submit": solution_data_present,
+            "last_error": last_error,
+            "note": "preflight passed; evidence fields None mean 'could not determine'.",
+        }
+
+    def _finalize_solve(
+        self,
+        app: Any,
+        target: AedtTarget,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        setups_arg = arguments.get("setups")
+        if setups_arg is None:
+            try:
+                setups = [str(getattr(s, "name", "")) for s in (getattr(app, "setups", None) or [])]
+            except Exception as exc:  # vendor internals can raise for mixed solution types
+                raise BackendCommandError(
+                    "finalize_solve could not enumerate setups (%s); pass setups=[...] explicitly"
+                    % repr(exc)[:120]
+                ) from exc
+        elif isinstance(setups_arg, str):
+            setups = [setups_arg]
+        elif isinstance(setups_arg, (list, tuple)):
+            setups = [str(item) for item in setups_arg]
+        else:
+            raise BackendCommandError("setups must be a name, a list of names, or omitted")
+        if not setups:
+            raise BackendCommandError("finalize_solve requires at least one setup")
+
+        try:
+            saved = bool(app.save_project())
+        except Exception as exc:  # noqa: BLE001
+            raise BackendCommandError("finalize failed: save_project raised (E_SAVE_MISSING): %s" % exc) from exc
+        if not saved:
+            raise BackendCommandError("finalize failed: save_project returned False (E_SAVE_MISSING)")
+
+        probe = {name: self._probe_solution_data(app, name) for name in setups}
+        missing = [name for name, ok in probe.items() if ok is False]
+        return {
+            "target": _target_dict(target),
+            "saved": True,
+            "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+            "setup_solution_data": probe,
+            "incomplete_setups": missing,
+            "solution_data_complete": not missing and all(v is not False for v in probe.values()),
+            "note": "True = solution data present for that setup; None = could not determine. "
+                    "Incomplete setups mean the run must not be reported as COMPLETED.",
+        }
+
+    def _export_farfield_report(
+        self,
+        app: Any,
+        target: AedtTarget,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        setup_name = _required_text(arguments, "setup_name")
+        out_dir = _required_text(arguments, "output_dir")
+        post = getattr(app, "post", None)
+        if post is None:
+            raise BackendCommandError("far-field export unavailable for this design (E_API_MISUSE)")
+        presets = {
+            "theta_phi0": ({"Phi": ["0deg"]}, "Theta"),
+            "theta_phi90": ({"Phi": ["90deg"]}, "Theta"),
+            "phi_theta90": ({"Phi": ["All"], "Theta": ["90deg"]}, "Phi"),
+        }
+        cuts = arguments.get("cuts") or ["theta_phi0", "phi_theta90"]
+        if isinstance(cuts, str):
+            cuts = [cuts]
+        unknown = [str(c) for c in cuts if str(c) not in presets]
+        if unknown:
+            raise BackendCommandError("unknown cuts %s; choose from %s" % (unknown, sorted(presets)))
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        results: dict[str, Any] = {}
+        for cut in cuts:
+            variations, sweep = presets[str(cut)]
+            rep = post.create_report(
+                expressions=["dB(GainTotal)"],
+                setup_sweep_name="%s : LastAdaptive" % setup_name,
+                primary_sweep_variable=sweep,
+                report_category="Far Fields",
+                variations=variations,
+                plot_type="Rectangular Plot",
+            )
+            report_name = getattr(rep, "name", None) or str(rep)
+            exported = Path(post.export_report_to_csv(out_dir, report_name))
+            rows = 0
+            if exported.is_file():
+                try:
+                    with exported.open(encoding="utf-8") as handle:
+                        rows = sum(1 for _ in handle)
+                except Exception:
+                    rows = 0
+            results[str(cut)] = {
+                "report_name": report_name,
+                "path": str(exported),
+                "exists": exported.is_file(),
+                "rows": rows,
+                "non_empty": rows > 1,
+            }
+        empty = [k for k, v in results.items() if not v["non_empty"]]
+        if empty:
+            raise BackendCommandError(
+                "far-field export produced empty report(s) %s (E_REPORT_EMPTY); "
+                "setup %s may lack radiated-field data (infinite sphere must exist at solve time)"
+                % (empty, setup_name)
+            )
+        return {
+            "target": _target_dict(target),
+            "setup_name": setup_name,
+            "output_dir": out_dir,
+            "cuts": results,
+            "non_empty": True,
+            "note": "Non-empty CSV proves the report has rows, not that the far field "
+                    "belongs to the latest solve; pair with finalize_solve evidence.",
+        }
+
 
     def _ping(self, desktop: Any, target: AedtTarget) -> dict[str, Any]:
         project = desktop.active_project()

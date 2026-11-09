@@ -2,9 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from aedt_target import AedtTarget
-from pyaedt_backend import PyAedtBackend
+from pyaedt_backend import BackendCommandError, PyAedtBackend
 from pyaedt_capabilities import OFFICIAL_BACKEND_COMMANDS, OfficialCapabilities
 
 
@@ -352,6 +353,103 @@ class OfficialCapabilityTests(unittest.TestCase):
         self.assertEqual(self.active_app.analyze_setup_calls, [])
         self.assertEqual(len(self.active_app.analyze_calls), 1)
         self.assertTrue(self.active_app.analyze_calls[0]["solve_in_batch"])
+
+    def _hfss_native(self, solver="Iterative Solver", frequency="28GHz"):
+        self.active_app.design_type = "HFSS"
+        values = {"Solver Type": solver, "Solution Freq": frequency}
+        self.active_app.odesign = mock.Mock()
+        self.active_app.odesign.GetPropertyValue.side_effect = lambda tab, server, prop: values[prop]
+        return values
+
+    def test_analyze_all_api_success_is_not_completion(self):
+        result = self.backend.execute(self.target, "analyze_design", {"analyze_all_designs": True})
+        self.assertTrue(result["api_returned_success"])
+        self.assertFalse(result["completed"])
+        self.assertFalse(result["solver_completion_confirmed"])
+        self.assertFalse(result["convergence_confirmed"])
+
+    def test_hfss_reports_native_setup_without_implicit_save(self):
+        self._hfss_native()
+        result = self.backend.execute(self.target, "analyze_design", {"setup_name": "Setup1"})
+        self.assertEqual(self.active_app.save_calls, [])
+        snapshot = result["setup_readback"]
+        self.assertTrue(snapshot["readback_confirmed"])
+        self.assertEqual(snapshot["setups"]["Setup1"], {
+            "solver_type": "Iterative Solver", "solution_frequency": "28GHz"
+        })
+        self.assertEqual(snapshot["scope"], "immediately_before_interactive_submit")
+        self.assertFalse(result["solver_completion_confirmed"])
+        self.assertFalse(result["convergence_confirmed"])
+        self.assertTrue(result["submitted_at_utc"].endswith("+00:00"))
+
+    def test_hfss_save_changing_solver_refuses_submit(self):
+        values = self._hfss_native()
+        def save():
+            self.active_app.save_calls.append((None, None))
+            values["Solver Type"] = "Direct Solver"
+            return True
+        self.active_app.save_project = save
+        with self.assertRaisesRegex(BackendCommandError, "No solve was submitted"):
+            self.backend.execute(self.target, "analyze_design", {"setup_name": "Setup1", "save_before_solve": True})
+        self.assertEqual(len(self.active_app.save_calls), 1)
+        self.assertEqual(self.active_app.analyze_setup_calls, [])
+
+    def test_hfss_save_losing_native_readback_refuses_submit(self):
+        self._hfss_native()
+        def save():
+            self.active_app.odesign.GetPropertyValue.side_effect = RuntimeError("native unavailable")
+            return True
+        self.active_app.save_project = save
+        with self.assertRaisesRegex(BackendCommandError, "No solve was submitted"):
+            self.backend.execute(self.target, "analyze_design", {"setup_name": "Setup1", "save_before_solve": True})
+        self.assertEqual(self.active_app.analyze_setup_calls, [])
+
+    def test_hfss_save_changing_frequency_refuses_submit(self):
+        values = self._hfss_native()
+        def save():
+            values["Solution Freq"] = "30GHz"
+            return True
+        self.active_app.save_project = save
+        with self.assertRaisesRegex(BackendCommandError, "solution_frequency"):
+            self.backend.execute(self.target, "analyze_design", {"setup_name": "Setup1", "save_before_solve": True})
+        self.assertEqual(self.active_app.analyze_setup_calls, [])
+
+    def test_hfss_save_with_unchanged_readback_can_submit(self):
+        self._hfss_native()
+        result = self.backend.execute(self.target, "analyze_design", {"setup_name": "Setup1", "save_before_solve": True})
+        self.assertEqual(len(self.active_app.save_calls), 1)
+        self.assertEqual(len(self.active_app.analyze_setup_calls), 1)
+        self.assertTrue(result["setup_readback"]["readback_confirmed"])
+
+    def test_save_failure_refuses_submit(self):
+        self.active_app.save_project = lambda: False
+        with self.assertRaisesRegex(BackendCommandError, "save failed"):
+            self.backend.execute(self.target, "analyze_design", {"setup_name": "Setup1", "save_before_solve": True})
+        self.assertEqual(self.active_app.analyze_setup_calls, [])
+
+    def test_hfss_missing_native_interface_is_unconfirmed(self):
+        self.active_app.design_type = "HFSS"
+        result = self.backend.execute(self.target, "analyze_design", {"setup_name": "Setup1"})
+        self.assertFalse(result["setup_readback"]["readback_confirmed"])
+        self.assertTrue(result["setup_readback"]["errors"])
+        self.assertIn("incomplete", result["submission_warnings"][0])
+
+    def test_batch_readback_is_explicitly_before_internal_save(self):
+        self._hfss_native()
+        result = self.backend.execute(self.target, "analyze_design", {"setup_name": "Setup1", "solve_in_batch": True})
+        self.assertEqual(result["setup_readback"]["scope"], "before_pyaedt_batch_save")
+        self.assertIn("does not confirm", result["submission_warnings"][0])
+
+    def test_hfss_export_old_normal_profile_is_not_latest_completion(self):
+        self.active_app.design_type = "HFSS"
+        output = self.root / "old-profile.txt"
+        result = self.backend.execute(self.target, "export_results", {
+            "export_type": "profile", "setup_name": "Setup1", "output_path": str(output)
+        })
+        self.assertTrue(result["evidence_summary"]["normal_completion_reported"])
+        self.assertFalse(result["evidence_summary"]["latest_submission_linked"])
+        self.assertFalse(result["solver_completion_confirmed"])
+        self.assertFalse(result["convergence_confirmed"])
 
     def test_failed_validation_prevents_analysis(self):
         self.active_app.valid = False

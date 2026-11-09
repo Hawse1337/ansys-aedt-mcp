@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -493,18 +497,31 @@ async def analyze_design(
     analyze_all_designs: bool = False,
     icepak_safe_mode: bool = True,
     save_before_solve: bool = False,
+    blocking: bool = False,
+    blocking_timeout_s: float | None = None,
+    blocking_poll_interval_s: float = 5.0,
     pid: int | None = None,
     port: int | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Validate and submit an analysis; Icepak uses safe single-core defaults.
 
-    ``save_before_solve`` defaults to ``False`` because saving an AEDT project
-    resets every setup's Solver Type to "Direct Solver"; on large models that
-    exhausts memory. Set it to ``True`` only if the design state must be written
-    to disk before the solve.
+    ``save_before_solve`` defaults to ``False`` to avoid an implicit project
+    write. HFSS returns a native solver/frequency snapshot where supported;
+    if an explicit save changes a known setting, submission is refused. This
+    check does not guarantee settings after batch mode's internal save.
+    API success is submission evidence, not completion or convergence proof.
+
+    ``blocking=true`` (v1.5, additive) makes this tool poll analysis_status
+    after the submission until the solver reports idle, the timeout expires,
+    or polling errors. It requires ``project_name`` and ``design_name``.
+    Solver idle is still not convergence proof: run ``finalize_solve`` and
+    verify the evidence before reporting results. With ``blocking=false``
+    (default) the return value is exactly the pre-v1.5 payload.
     """
-    return await _worker_call(
+    if blocking and (not project_name or not design_name):
+        raise ValueError("blocking=true requires project_name and design_name")
+    result = await _worker_call(
         "analyze_design",
         pid=pid,
         port=port,
@@ -527,6 +544,53 @@ async def analyze_design(
         },
         timeout=timeout if timeout is not None else 600.0,
     )
+    if not blocking:
+        return result
+    started_at = time.monotonic()
+    interval = max(1.0, float(blocking_poll_interval_s))
+    polls = 0
+    blocking_status = "error"
+    last_status: dict[str, Any] = {}
+    while True:
+        polls += 1
+        try:
+            last_status = await _worker_call(
+                "analysis_status",
+                pid=pid,
+                port=port,
+                arguments={
+                    "project_name": project_name,
+                    "design_name": design_name,
+                    "setup_name": setup_name or "",
+                },
+                timeout=timeout if timeout is not None else 600.0,
+            )
+            running = bool(last_status.get("running", False))
+        except Exception as exc:  # noqa: BLE001
+            blocking_status = "error"
+            last_status = {"poll_error": repr(exc)[:300]}
+            break
+        if not running:
+            blocking_status = "completed"
+            break
+        elapsed = time.monotonic() - started_at
+        if blocking_timeout_s is not None and elapsed >= float(blocking_timeout_s):
+            blocking_status = "timed_out"
+            break
+        await asyncio.sleep(interval)
+    result.update({
+        "blocking_requested": True,
+        "blocking_status": blocking_status,
+        "blocking_elapsed_s": round(time.monotonic() - started_at, 2),
+        "blocking_timeout_s": blocking_timeout_s,
+        "blocking_poll_interval_s": interval,
+        "blocking_poll_count": polls,
+        "blocking_last_status": last_status,
+        "blocking_note": "blocking_status 'completed' means the solver reported idle, "
+                        "not that convergence or result integrity were verified; "
+                        "call finalize_solve and verify the evidence.",
+    })
+    return result
 
 
 @mcp.tool()
@@ -689,7 +753,7 @@ async def get_analysis_status(
     port: int | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Return running state and setup metadata for one explicit HFSS design."""
+    """Return running state and setup metadata; idle/old results do not prove a new solve completed."""
     return await _worker_call(
         "analysis_status",
         pid=pid,
@@ -733,6 +797,371 @@ async def build_wr90_waveguide(
 
 
 register_maxwell_tools(mcp, _worker_call)
+
+
+# ---------------------------------------------------------------------------
+# v1.5 guarded-workflow tools (additive; existing tools unchanged)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def preflight_design(
+    project_name: str,
+    design_name: str,
+    setup_name: str | None = None,
+    require_ff_sphere: bool = True,
+    validate_attempts: int = 3,
+    pid: int | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Fail-closed pre-submission checks for one design.
+
+    Repeats geometry validation ``validate_attempts`` times (AEDT validation
+    can transiently report false right after edits), checks that an
+    infinite-sphere/radiation setup exists when ``require_ff_sphere`` is true
+    (far fields are all zero when it is inserted only after solving), and
+    probes whether the named setup already has solution data. Any hard failure
+    raises instead of returning a passing payload.
+    """
+    return await _worker_call(
+        "preflight_design",
+        pid=pid,
+        port=port,
+        arguments={
+            "project_name": project_name,
+            "design_name": design_name,
+            "setup_name": setup_name,
+            "require_ff_sphere": require_ff_sphere,
+            "validate_attempts": validate_attempts,
+        },
+        timeout=timeout,
+    )
+
+
+@mcp.tool()
+async def finalize_solve(
+    project_name: str,
+    design_name: str,
+    setups: list[str] | None = None,
+    pid: int | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Save the project and verify per-setup solution data presence.
+
+    Saving is mandatory (``save_project`` returning False or raising makes the
+    call fail with E_SAVE_MISSING). Then each setup is probed; setups without
+    solution data are listed under ``incomplete_setups`` and
+    ``solution_data_complete`` stays false, so a run cannot be reported as
+    COMPLETED while data is missing.
+    """
+    return await _worker_call(
+        "finalize_solve",
+        pid=pid,
+        port=port,
+        arguments={
+            "project_name": project_name,
+            "design_name": design_name,
+            "setups": setups,
+        },
+        timeout=timeout if timeout is not None else 600.0,
+    )
+
+
+@mcp.tool()
+async def export_farfield_report(
+    project_name: str,
+    design_name: str,
+    setup_name: str,
+    output_dir: str,
+    cuts: list[str] | None = None,
+    pid: int | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Export far-field cuts bound to a setup that has radiated-field data.
+
+    Supported cuts: theta_phi0, theta_phi90, phi_theta90. Each exported CSV is
+    checked to be non-empty; an empty report fails with E_REPORT_EMPTY (a
+    report bound to a setup without far-field data, e.g. a plain S11 adaptive
+    setup, produces empty files). Non-empty rows do not by themselves prove
+    the far field belongs to the latest solve.
+    """
+    return await _worker_call(
+        "export_farfield_report",
+        pid=pid,
+        port=port,
+        arguments={
+            "project_name": project_name,
+            "design_name": design_name,
+            "setup_name": setup_name,
+            "output_dir": output_dir,
+            "cuts": cuts,
+        },
+        timeout=timeout if timeout is not None else 600.0,
+    )
+
+
+@mcp.tool()
+async def wait_for_solve(
+    project_name: str,
+    design_name: str,
+    setup_name: str = "",
+    timeout_s: float | None = None,
+    poll_interval_s: float = 5.0,
+    pid: int | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Poll analysis status until the solver reports idle, timeout, or error.
+
+    Returns one of ``idle`` / ``timeout`` / ``error``. ``idle`` means the
+    desktop reported no running simulation; it is not convergence proof.
+    """
+    started_at = time.monotonic()
+    interval = max(1.0, float(poll_interval_s))
+    polls = 0
+    while True:
+        polls += 1
+        try:
+            last_status = await _worker_call(
+                "analysis_status",
+                pid=pid,
+                port=port,
+                arguments={
+                    "project_name": project_name,
+                    "design_name": design_name,
+                    "setup_name": setup_name,
+                },
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "error",
+                "elapsed_s": round(time.monotonic() - started_at, 2),
+                "poll_count": polls,
+                "error": repr(exc)[:300],
+            }
+        if not bool(last_status.get("running", False)):
+            return {
+                "status": "idle",
+                "elapsed_s": round(time.monotonic() - started_at, 2),
+                "poll_count": polls,
+                "last_status": last_status,
+                "note": "Solver idle is not convergence proof; run finalize_solve "
+                        "and verify the evidence before reporting results.",
+            }
+        if timeout_s is not None and time.monotonic() - started_at >= float(timeout_s):
+            return {
+                "status": "timeout",
+                "elapsed_s": round(time.monotonic() - started_at, 2),
+                "poll_count": polls,
+                "last_status": last_status,
+            }
+        await asyncio.sleep(interval)
+
+
+@mcp.tool()
+def verify_artifacts(
+    paths: list[str],
+    min_rows: int = 1,
+    freq_lo_ghz: float | None = None,
+    freq_hi_ghz: float | None = None,
+    freq_points_min: int | None = None,
+) -> dict[str, Any]:
+    """Check exported result files locally (no AEDT involved).
+
+    Each file is checked for existence, readable non-empty rows, and — when
+    the first column parses as frequencies — coverage of the requested
+    ``freq_lo_ghz``/``freq_hi_ghz`` range and a minimum number of frequency
+    points. Error codes: E_EXPORT_MISSING / E_EXPORT_UNREADABLE /
+    E_EXPORT_EMPTY / E_FREQ_RANGE_LOW / E_FREQ_RANGE_HIGH / E_FREQ_POINTS.
+    """
+    results: dict[str, Any] = {}
+    for raw in paths:
+        path = Path(raw).expanduser().resolve()
+        entry: dict[str, Any] = {
+            "path": str(path),
+            "exists": path.is_file(),
+            "size_bytes": path.stat().st_size if path.is_file() else None,
+            "ok": False,
+            "errors": [],
+        }
+        if not entry["exists"]:
+            entry["errors"].append("E_EXPORT_MISSING")
+            results[str(path)] = entry
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            entry["errors"].append("E_EXPORT_UNREADABLE")
+            results[str(path)] = entry
+            continue
+        lines = [
+            ln for ln in text.splitlines()
+            if ln.strip() and not ln.strip().startswith(("!", "#"))
+        ]
+        entry["rows"] = len(lines)
+        if len(lines) < int(min_rows):
+            entry["errors"].append("E_EXPORT_EMPTY")
+        freqs = []
+        for ln in lines:
+            parts = re.split(r"[\s,]+", ln.strip())
+            try:
+                freqs.append(float(parts[0]))
+            except (ValueError, IndexError):
+                pass
+        if freqs:
+            entry["first_freq"] = min(freqs)
+            entry["last_freq"] = max(freqs)
+            if freq_lo_ghz is not None and entry["first_freq"] > float(freq_lo_ghz):
+                entry["errors"].append("E_FREQ_RANGE_LOW")
+            if freq_hi_ghz is not None and entry["last_freq"] < float(freq_hi_ghz):
+                entry["errors"].append("E_FREQ_RANGE_HIGH")
+            if freq_points_min is not None and len(freqs) < int(freq_points_min):
+                entry["errors"].append("E_FREQ_POINTS")
+        entry["ok"] = not entry["errors"]
+        results[str(path)] = entry
+    return {"files": results, "all_ok": all(v["ok"] for v in results.values())}
+
+
+@mcp.tool()
+def clear_stale_lock(project_path: str, force: bool = False) -> dict[str, Any]:
+    """Remove a stale ``*.aedt.lock`` only when its owner is provably gone.
+
+    Fails closed: no recognizable owner PID, or an owner process that is still
+    alive, means the lock is left untouched unless the caller explicitly
+    understands the risk. ``force`` never deletes a lock whose owner is alive.
+    """
+    path = Path(project_path).expanduser().resolve()
+    if path.suffix.lower() != ".aedt":
+        path = path.with_suffix(".aedt")
+    lock = Path(str(path) + ".lock")
+    if not lock.exists():
+        return {"cleared": False, "reason": "no_lock", "lock_path": str(lock)}
+    owner_pid: int | None = None
+    unstructured = False
+    try:
+        text = lock.read_text(encoding="utf-8", errors="replace")
+        # AEDT lock files are "$begin 'ConnectionParameters' ... DesktopProcessID=NNN".
+        # Parse the structured field first; a loose integer scan may pick up an
+        # unrelated number (version/build/port) and misjudge the owner.
+        structured = re.search(r"DesktopProcessID\s*=\s*(\d+)", text)
+        if structured is None:
+            structured = re.search(r"\b(?:ProcID|ProcessID|PID|pid)\s*[=:]\s*(\d+)", text)
+        if structured is not None:
+            owner_pid = int(structured.group(1))
+        else:
+            loose = re.search(r"\b\d{3,10}\b", text)
+            if loose is not None:
+                owner_pid = int(loose.group())
+                unstructured = True
+    except Exception:
+        owner_pid = None
+    alive: bool | None = None
+    if owner_pid is not None:
+        try:
+            import psutil
+            alive = bool(psutil.pid_exists(owner_pid))
+        except ImportError:
+            alive = None
+        if alive:
+            return {
+                "cleared": False,
+                "reason": "owner_alive",
+                "owner_pid": owner_pid,
+                "lock_path": str(lock),
+                "pid_source": "unstructured_guess" if unstructured else "lock_metadata",
+                "note": "refusing to delete a lock whose owner process is alive",
+            }
+        if alive is None:
+            return {
+                "cleared": False,
+                "reason": "owner_unknown_state",
+                "owner_pid": owner_pid,
+                "lock_path": str(lock),
+                "note": "could not verify the owner process state; use force to override",
+            }
+    elif not force:
+        return {
+            "cleared": False,
+            "reason": "unknown_owner",
+            "lock_path": str(lock),
+            "note": "lock content has no recognizable PID; use force=True to delete",
+        }
+    try:
+        lock.unlink()
+        return {"cleared": True, "removed_path": str(lock), "owner_pid": owner_pid}
+    except OSError as exc:
+        return {"cleared": False, "reason": "delete_failed", "error": repr(exc)[:200]}
+
+
+@mcp.tool()
+def acquire_campaign_lock(campaign_dir: str, holder: str, timeout_s: float = 0.0) -> dict[str, Any]:
+    """Create ``campaign.lock`` for exclusive campaign ownership (opt-in).
+
+    Returns immediately with ``acquired`` false when the lock is held by
+    someone else and no timeout is given; with a positive ``timeout_s`` it
+    retries until the deadline. Lock files are only advisory here — the
+    worker-side enforcement is a separate integration step.
+    """
+    directory = Path(campaign_dir).expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    lock = directory / "campaign.lock"
+    started = time.monotonic()
+    while True:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            existing: dict[str, Any] = {}
+            try:
+                text = lock.read_text(encoding="utf-8", errors="replace")
+                existing = json.loads(text) if text.strip().startswith("{") else {"raw": text[:200]}
+            except Exception:
+                existing = {"raw": "unreadable"}
+            if timeout_s > 0 and time.monotonic() - started < float(timeout_s):
+                time.sleep(min(1.0, float(timeout_s)))
+                continue
+            return {
+                "acquired": False,
+                "reason": "held_by_other",
+                "existing": existing,
+                "lock_path": str(lock),
+            }
+        else:
+            payload = {
+                "holder": str(holder),
+                "pid": os.getpid(),
+                "acquired_at_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            os.write(fd, json.dumps(payload).encode("utf-8"))
+            os.close(fd)
+            return {
+                "acquired": True,
+                "lock_path": str(lock),
+                "holder": str(holder),
+                "pid": os.getpid(),
+            }
+
+
+@mcp.tool()
+def release_campaign_lock(campaign_dir: str, holder: str) -> dict[str, Any]:
+    """Release a campaign lock acquired by the same holder."""
+    lock = Path(campaign_dir).expanduser().resolve() / "campaign.lock"
+    if not lock.exists():
+        return {"released": False, "reason": "no_lock"}
+    try:
+        payload = json.loads(lock.read_text(encoding="utf-8", errors="replace"))
+        current = payload.get("holder")
+    except Exception:
+        current = None
+    if current is not None and str(current) != str(holder):
+        return {"released": False, "reason": "holder_mismatch", "existing_holder": current}
+    try:
+        lock.unlink()
+        return {"released": True}
+    except OSError as exc:
+        return {"released": False, "reason": "delete_failed", "error": repr(exc)[:200]}
 
 
 @mcp.resource("aedt://status")

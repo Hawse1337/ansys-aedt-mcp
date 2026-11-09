@@ -9,11 +9,13 @@ import os
 import re
 import tempfile
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from typing import Any
 
 from aedt_target import AedtTarget
+from solve_evidence import summarize_hfss_convergence, summarize_hfss_profile
 
 
 class CapabilityError(ValueError):
@@ -114,6 +116,57 @@ def json_safe(value: Any) -> Any:
 
 def _is_icepak(app: Any) -> bool:
     return str(getattr(app, "design_type", "")).strip().lower() == "icepak"
+
+
+def _hfss_setup_readback(app: Any, setup_name: str | None) -> dict[str, Any]:
+    """Read native HFSS setup properties; never substitute the PyAEDT cache.
+
+    Unsupported solution types, versions, or native interfaces are explicitly
+    unconfirmed.  In particular a snapshot cannot prove the eventual settings
+    used by batch analyze(), which can save internally after this readback.
+    """
+    applicable = str(getattr(app, "design_type", "")).strip().casefold() == "hfss"
+    result: dict[str, Any] = {
+        "applicable": applicable,
+        "source": "native_HfssTab_GetPropertyValue" if applicable else None,
+        "readback_confirmed": False,
+        "setups": {},
+        "errors": [],
+    }
+    if not applicable:
+        return result
+    try:
+        names = [setup_name] if setup_name else list(app.get_setups())
+        getter = app.odesign.GetPropertyValue
+        for name in names:
+            values = {}
+            for key, prop in (("solver_type", "Solver Type"), ("solution_frequency", "Solution Freq")):
+                try:
+                    value = getter("HfssTab", f"AnalysisSetup:{name}", prop)
+                    values[key] = str(value).strip() if value is not None and type(value) is not bool else None
+                    if not values[key]:
+                        result["errors"].append(f"{name}/{prop}: native readback unavailable")
+                except Exception as exc:
+                    values[key] = None
+                    result["errors"].append(f"{name}/{prop}: {type(exc).__name__}: {exc}")
+            result["setups"][str(name)] = values
+        result["readback_confirmed"] = bool(names) and not result["errors"]
+    except Exception as exc:
+        result["errors"].append(f"{type(exc).__name__}: {exc}")
+    return result
+
+
+def _check_saved_hfss_setup(before: dict[str, Any], after: dict[str, Any]) -> None:
+    """Refuse submission when an explicit save changes confirmed native settings."""
+    for name, previous in before["setups"].items():
+        current = after["setups"].get(name, {})
+        for prop, value in previous.items():
+            if value is not None and current.get(prop) != value:
+                raise CapabilityError(
+                    f"Project was saved, but native HFSS {name}/{prop} changed "
+                    f"from {value!r} to {current.get(prop)!r}. No solve was submitted. "
+                    "Inspect the saved setup and explicitly restore the intended settings before retrying."
+                )
 
 
 def _icepak_result_directories(app: Any) -> list[Path]:
@@ -718,7 +771,7 @@ class OfficialCapabilities:
                 raise CapabilityError(
                     "setup_name cannot be used when analyze_all_designs is true"
                 )
-            completed = bool(
+            accepted = bool(
                 desktop.analyze_all(project=project_name, design=design_name)
             )
             return {
@@ -726,8 +779,11 @@ class OfficialCapabilities:
                 "mode": "analyze_all",
                 "project_name": project_name,
                 "design_name": design_name,
-                "completed": completed,
-                "solver_completion_confirmed": completed,
+                "completed": False,
+                "api_returned_success": accepted,
+                "solver_completion_confirmed": False,
+                "convergence_confirmed": False,
+                "completion_evidence_required": "Inspect each setup's native profile and convergence for this submission; API success is not completion.",
             }
 
         app = self._resolve_app(desktop, project_name, design_name)
@@ -736,6 +792,8 @@ class OfficialCapabilities:
             return {
                 "target": self._target(target),
                 "started": False,
+                "solver_completion_confirmed": False,
+                "convergence_confirmed": False,
                 "validation_passed": False,
                 "validation_details": details,
                 "project_name": getattr(app, "project_name", project_name),
@@ -770,11 +828,27 @@ class OfficialCapabilities:
             adjustments.append("Icepak safe mode disabled automatic DSO settings")
         revert_to_initial_mesh = _boolean(arguments, "revert_to_initial_mesh", False)
         save_before_solve = _boolean(arguments, "save_before_solve", False)
+        setup_readback = _hfss_setup_readback(app, setup_name)
         if save_before_solve:
-            # Opt-in only: a project save resets each setup's Solver Type back to
-            # "Direct Solver" in AEDT 2026 R1, which on large models (e.g. a 70 mm
-            # aperture at 28 GHz) exhausts memory and fails with SOLVER_OUT_OF_MEMORY.
-            app.save_project()
+            # A save has reset Solver Type in this environment.  Do not silently
+            # submit a changed or no longer readable solver/frequency setting.
+            if app.save_project() is False:
+                raise CapabilityError("Project save failed; no solve was submitted")
+            after_save = _hfss_setup_readback(app, setup_name)
+            _check_saved_hfss_setup(setup_readback, after_save)
+            setup_readback = after_save
+        setup_readback["scope"] = (
+            "before_pyaedt_batch_save" if solve_in_batch else "immediately_before_interactive_submit"
+        )
+        submission_warnings = []
+        if solve_in_batch:
+            submission_warnings.append(
+                "PyAEDT batch analyze() may save internally after this snapshot. "
+                "This readback does not confirm the settings ultimately used by the batch solver."
+            )
+        if setup_readback["applicable"] and not setup_readback["readback_confirmed"]:
+            submission_warnings.append("Native HFSS solver/frequency readback was incomplete; inspect the setup and native profile.")
+        submitted_at_utc = datetime.now(timezone.utc).isoformat()
         if solve_in_batch:
             # Batch solve closes and reopens the .aedt file, so it needs a saved
             # project; keep the original PyAEDT path for that mode.
@@ -810,6 +884,30 @@ class OfficialCapabilities:
                     blocking=False,
                 )
             )
+        # v1.5 additive evidence fields (None = could not determine)
+        ff_sphere_present: bool | None = None
+        try:
+            field_setups = getattr(app, "field_setup_names", None)
+            if isinstance(field_setups, (list, tuple)):
+                ff_sphere_present = bool(len(field_setups))
+        except Exception:
+            ff_sphere_present = None
+        solution_data_present_before_submit: bool | None = None
+        if setup_name:
+            try:
+                known = []
+                for setup_obj in (getattr(app, "setups", None) or []):
+                    if str(getattr(setup_obj, "name", "")) != str(setup_name):
+                        continue
+                    solved = getattr(setup_obj, "is_solved", None)
+                    if solved is not None:
+                        known.append(bool(solved))
+                if known:
+                    solution_data_present_before_submit = any(known)
+            except Exception:
+                # vendor internals can raise KeyError('HFSS Terminal Network') for
+                # Terminal/mixed designs; keep the evidence field inconclusive.
+                solution_data_present_before_submit = None
         return {
             "target": self._target(target),
             "started": started,
@@ -819,6 +917,13 @@ class OfficialCapabilities:
             "setup_name": setup_name,
             "mode": "batch" if solve_in_batch else "interactive",
             "solver_completion_confirmed": False,
+            "convergence_confirmed": False,
+            "submitted_at_utc": submitted_at_utc,
+            "ff_sphere_present": ff_sphere_present,
+            "solution_data_present_before_submit": solution_data_present_before_submit,
+            "setup_readback": setup_readback,
+            "submission_warnings": submission_warnings,
+            "completion_evidence_required": "Inspect the native profile and convergence for this exact submission; API success, idle state, or existing results are insufficient.",
             "icepak_safe_mode_applied": safe_mode_applied,
             "requested_resources": {
                 "num_cores": requested_cores,
@@ -887,6 +992,12 @@ class OfficialCapabilities:
                 kwargs["setup"] = setup_name
             result = method(**kwargs)
             export_method = methods[export_type]
+        evidence = None
+        if str(getattr(app, "design_type", "")).strip().casefold() == "hfss" and output_path.is_file():
+            if export_type in {"profile", "convergence"}:
+                content = output_path.read_text(encoding="utf-8", errors="replace")
+                parser = summarize_hfss_profile if export_type == "profile" else summarize_hfss_convergence
+                evidence = parser(content)
         return {
             "target": self._target(target),
             "export_type": export_type,
@@ -896,6 +1007,12 @@ class OfficialCapabilities:
             "file_exists": output_path.exists(),
             "export_method": export_method,
             "details": details,
+            "evidence_summary": evidence,
+            "project_name": getattr(app, "project_name", None),
+            "design_name": getattr(app, "design_name", None),
+            "solver_completion_confirmed": False,
+            "convergence_confirmed": False,
+            "evidence_note": "Exports can belong to an earlier solve. Summaries describe the artifact only; link profile, convergence, frequency and project identity to the intended submission before accepting results.",
         }
 
     def _screenshot(self, desktop, target, arguments, connection_kwargs):

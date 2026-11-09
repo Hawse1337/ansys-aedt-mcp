@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from mcp.types import ImageContent
 
@@ -94,7 +94,7 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
         registered = {tool.name for tool in await mcp_server.mcp.list_tools()}
 
         self.assertTrue(expected.issubset(registered))
-        self.assertEqual(len(registered), 45)
+        self.assertEqual(len(registered), 53)  # v1.5: 45 legacy + 8 guarded-workflow tools
 
     async def test_targeted_status_and_connect_use_explicit_target(self):
         status = await mcp_server.check_aedt_status(pid=101)
@@ -203,3 +203,4 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

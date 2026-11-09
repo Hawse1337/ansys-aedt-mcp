@@ -33,6 +33,8 @@ py-modules = [
     "aedt_launcher",
     "aedt_project_guard",
     "mcp_server",
+
+    "solve_evidence",
 ]
 
 [tool.uv]

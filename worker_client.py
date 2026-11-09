@@ -4,6 +4,7 @@ import atexit
 import asyncio
 from dataclasses import dataclass, field
 import os
+import math
 from pathlib import Path
 import queue
 import subprocess
@@ -23,6 +24,23 @@ class WorkerClientError(RuntimeError):
 
 class WorkerTimeoutError(WorkerClientError):
     pass
+
+
+class WorkerPendingError(WorkerClientError):
+    """A timed-out request still owns the broker; no new request was sent."""
+
+
+class WorkerRecoveredError(WorkerClientError):
+    """Report the previous response without replaying the caller's new command."""
+
+    def __init__(self, response: WorkerResponse) -> None:
+        self.response = response
+        self.result = response.result
+        self.error = response.error
+        super().__init__(
+            f"Previous timed-out request {response.request_id} finished (ok={response.ok}); "
+            f"no new command was sent. Previous result={repr(response.result)[:2000]}; error={repr(response.error)[:2000]}"
+        )
 
 
 class WorkerProcessError(WorkerClientError):
@@ -50,6 +68,7 @@ class _Broker:
     log_handle: TextIO
     log_path: Path
     lock: threading.Lock = field(default_factory=threading.Lock)
+    pending_request: WorkerRequest | None = None
 
 
 class WorkerClient:
@@ -68,8 +87,9 @@ class WorkerClient:
         self.default_timeout = float(
             default_timeout
             if default_timeout is not None
-            else os.environ.get("AEDT_WORKER_TIMEOUT", "60")
+            else os.environ.get("AEDT_WORKER_TIMEOUT", "1800")
         )
+        self._validate_timeout(self.default_timeout)
         self._brokers: dict[str, _Broker] = {}
         self._brokers_guard = threading.RLock()
         self._locks: dict[str, asyncio.Lock] = {}
@@ -86,9 +106,11 @@ class WorkerClient:
         timeout: float | None = None,
     ) -> Any:
         effective_timeout = self.default_timeout if timeout is None else timeout
+        self._validate_timeout(effective_timeout)
         request = WorkerRequest.create(command, target, arguments or {}, effective_timeout)
         broker = self._broker_for(target)
         with broker.lock:
+            self._recover_pending(broker)
             return self._exchange(broker, request, effective_timeout)
 
     def release(
@@ -98,6 +120,7 @@ class WorkerClient:
         timeout: float | None = None,
     ) -> dict[str, Any]:
         effective_timeout = self.default_timeout if timeout is None else timeout
+        self._validate_timeout(effective_timeout)
         with self._brokers_guard:
             broker = self._brokers.get(target.key)
         if broker is None:
@@ -107,17 +130,18 @@ class WorkerClient:
             }
 
         request = WorkerRequest.create("release_connection", target, {}, effective_timeout)
-        try:
-            with broker.lock:
-                result = self._exchange(broker, request, effective_timeout)
+        # A timeout is not permission to interrupt an in-flight AEDT operation.
+        # Explicit release also waits until its previous response has been read.
+        with broker.lock:
+            self._recover_pending(broker)
+            result = self._exchange(broker, request, effective_timeout)
             if not isinstance(result, dict):
                 raise WorkerProtocolOutputError("AEDT broker release returned a non-object result")
+            self._stop_broker(broker, graceful_timeout=2.0)
             return {
                 "target": {"kind": target.kind, "value": target.value},
                 **result,
             }
-        finally:
-            self._stop_broker(broker, graceful_timeout=2.0)
 
     async def execute_async(
         self,
@@ -151,16 +175,37 @@ class WorkerClient:
         with self._brokers_guard:
             brokers = list({id(item): item for item in self._brokers.values()}.values())
         for broker in brokers:
+            if broker.pending_request is not None and broker.process.poll() is None:
+                # Leaving this worker's stdin open lets a late operation finish.
+                # Interpreter exit closes it; the worker then releases normally.
+                continue
+            if broker.pending_request is not None:
+                # Dead workers have no resources to preserve, but keep the
+                # unknown-outcome tombstone in the map to prevent a replay.
+                if broker.process.stdin is not None:
+                    try:
+                        broker.process.stdin.close()
+                    except OSError:
+                        pass
+                if broker.process.stdout is not None:
+                    broker.process.stdout.close()
+                broker.log_handle.close()
+                continue
             try:
                 self.release(broker.primary_target, timeout=min(self.default_timeout, 5.0))
             except Exception:
-                self._stop_broker(broker, graceful_timeout=0.5)
+                if broker.pending_request is None:
+                    self._stop_broker(broker, graceful_timeout=0.5)
         self._closed = True
 
     def _broker_for(self, target: AedtTarget) -> _Broker:
         with self._brokers_guard:
             broker = self._brokers.get(target.key)
             if broker is not None and broker.process.poll() is None:
+                return broker
+            if broker is not None and broker.pending_request is not None:
+                # The process may have exited after its valid response was
+                # queued. Recover it before declaring the outcome unknown.
                 return broker
             if broker is not None:
                 self._discard_broker(broker)
@@ -220,7 +265,7 @@ class WorkerClient:
             process.stdin.write(request.to_json() + "\n")
             process.stdin.flush()
         except (BrokenPipeError, OSError) as exc:
-            self._stop_broker(broker, graceful_timeout=0)
+            broker.pending_request = request
             raise WorkerProcessError(
                 f"AEDT broker pipe closed for {request.target.key}; log: {broker.log_path}"
             ) from exc
@@ -228,17 +273,19 @@ class WorkerClient:
         try:
             line = broker.responses.get(timeout=timeout)
         except queue.Empty as exc:
-            self._stop_broker(broker, graceful_timeout=0.5)
+            broker.pending_request = request
             raise WorkerTimeoutError(
-                f"AEDT broker timed out after {timeout:g}s for {request.target.key}"
+                f"AEDT broker timed out after {timeout:g}s for {request.target.key}; "
+                f"request {request.request_id} may still be running. Broker retained; "
+                "do not replay a mutating command. A later call only recovers its response first."
             ) from exc
         if line is None:
             try:
                 process.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
-                self._stop_broker(broker, graceful_timeout=0)
+                pass
             returncode = process.returncode
-            self._discard_broker(broker)
+            broker.pending_request = request
             raise WorkerProcessError(
                 f"AEDT broker exited with code {returncode}; log: {broker.log_path}"
             )
@@ -248,7 +295,7 @@ class WorkerClient:
         except queue.Empty:
             extra = None
         if extra is not None:
-            self._stop_broker(broker, graceful_timeout=0.5)
+            broker.pending_request = request
             raise WorkerProtocolOutputError(
                 "AEDT broker must emit exactly one JSON response line per request"
             )
@@ -256,10 +303,10 @@ class WorkerClient:
         try:
             response = WorkerResponse.from_json(line.strip())
         except WorkerProtocolError as exc:
-            self._stop_broker(broker, graceful_timeout=0.5)
+            broker.pending_request = request
             raise WorkerProtocolOutputError(f"invalid AEDT broker response: {exc}") from exc
         if response.request_id != request.request_id:
-            self._stop_broker(broker, graceful_timeout=0.5)
+            broker.pending_request = request
             raise WorkerProtocolOutputError("AEDT broker response request_id does not match")
         if not response.ok:
             error = response.error or {}
@@ -271,6 +318,36 @@ class WorkerClient:
 
         self._register_aliases(broker, response.result)
         return response.result
+
+    @staticmethod
+    def _validate_timeout(timeout: float) -> None:
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a finite positive number")
+
+    def _recover_pending(self, broker: _Broker) -> None:
+        pending = broker.pending_request
+        if pending is None:
+            return
+        try:
+            line = broker.responses.get_nowait()
+        except queue.Empty as exc:
+            if broker.process.poll() is not None:
+                raise WorkerProcessError('Broker exited with an unknown operation outcome; automatic restart refused') from exc
+            raise WorkerPendingError(
+                f"Request {pending.request_id} is still pending for {pending.target.key}; "
+                "no new command was sent and no broker was restarted."
+            ) from exc
+        if line is None:
+            raise WorkerProcessError("Timed-out broker exited; previous operation outcome is unknown")
+        try:
+            response = WorkerResponse.from_json(line.strip())
+            if response.request_id != pending.request_id:
+                raise WorkerProtocolError("pending response request_id mismatch")
+        except WorkerProtocolError as exc:
+            raise WorkerProtocolOutputError(str(exc)) from exc
+        broker.pending_request = None
+        self._register_aliases(broker, response.result)
+        raise WorkerRecoveredError(response)
 
     def _register_aliases(self, broker: _Broker, result: Any) -> None:
         if not isinstance(result, dict):

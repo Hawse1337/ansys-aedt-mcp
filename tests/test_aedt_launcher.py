@@ -25,9 +25,10 @@ class FakeProcess:
 
 
 class FakeWorkerClient:
-    def __init__(self, failures=0, reported_pid=9876):
+    def __init__(self, failures=0, reported_pid=4321, reported_port=50051):
         self.failures = failures
         self.reported_pid = reported_pid
+        self.reported_port = reported_port
         self.calls = []
         self.releases = []
 
@@ -39,6 +40,7 @@ class FakeWorkerClient:
             "connected": True,
             "aedt_version": "2026.1",
             "pid": self.reported_pid,
+            "port": self.reported_port,
         }
 
     def release(self, target, timeout=None):
@@ -60,7 +62,7 @@ class FakeClock:
 class AedtLauncherTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.install = Path(self.temp.name)
+        self.install = Path(self.temp.name).resolve()
         self.executable = self.install / "ansysedt.exe"
         self.executable.write_bytes(b"fake")
         self.process = FakeProcess()
@@ -95,24 +97,22 @@ class AedtLauncherTests(unittest.TestCase):
 
         self.assertEqual(self.commands[0][0], [str(self.executable), "-grpcsrv", "50051"])
         self.assertNotIn("-ng", self.commands[0][0])
-        self.assertEqual(self.worker.calls[0][0].key, "port:50051")
+        self.assertEqual(self.worker.calls[0][0].key, "pid:4321")
         self.assertEqual(result, {
-            "pid": 9876,
+            "pid": 4321,
             "port": 50051,
             "version": "2026.1",
             "connection_mode": "grpc",
         })
 
-    def test_launch_falls_back_to_process_pid_when_probe_omits_pid(self):
+    def test_launch_refuses_unconfirmed_process_identity(self):
         self.worker = FakeWorkerClient(reported_pid=None)
 
-        result = self._launcher().launch(
-            version="2026.1", port=50051, install_dir=self.install, timeout=5.0
-        )
-
-        self.assertEqual(result["pid"], 4321)
+        with self.assertRaisesRegex(AedtLaunchError, "does not match launched PID"):
+            self._launcher().launch(version="2026.1", port=50051, install_dir=self.install, timeout=5.0)
 
     def test_zero_port_selects_free_port(self):
+        self.worker.reported_port = 55000
         result = self._launcher().launch(port=0, install_dir=self.install)
 
         self.assertEqual(result["port"], 55000)
@@ -133,14 +133,13 @@ class AedtLauncherTests(unittest.TestCase):
         self.assertEqual(self.commands, [])
 
     def test_readiness_waits_for_port_and_worker_ping(self):
-        states = iter([False, True, True])
-        self.worker = FakeWorkerClient(failures=1)
+        states = iter([False, False, True])
         launcher = self._launcher(port_is_open=lambda port: next(states, True))
 
         result = launcher.launch(port=50051, install_dir=self.install, timeout=5.0)
 
-        self.assertEqual(result["pid"], 9876)
-        self.assertEqual(len(self.worker.calls), 2)
+        self.assertEqual(result["pid"], 4321)
+        self.assertEqual(len(self.worker.calls), 1)
         self.assertGreater(self.clock.now, 0)
 
     def test_timeout_never_terminates_aedt(self):
@@ -152,11 +151,11 @@ class AedtLauncherTests(unittest.TestCase):
         self.assertFalse(self.process.terminate_called)
         self.assertFalse(self.process.kill_called)
 
-    def test_timeout_releases_probe_broker_without_terminating_aedt(self):
+    def test_failed_handshake_is_not_retried_or_released(self):
         self.worker = FakeWorkerClient(failures=100)
         launcher = self._launcher(port_is_open=lambda port: True)
 
-        with self.assertRaisesRegex(AedtLaunchError, "timed out"):
+        with self.assertRaisesRegex(AedtLaunchError, "single readiness handshake failed"):
             launcher.launch(
                 version="2026.1",
                 port=50051,
@@ -164,7 +163,8 @@ class AedtLauncherTests(unittest.TestCase):
                 timeout=0.5,
             )
 
-        self.assertEqual(self.worker.releases[0][0].key, "port:50051")
+        self.assertEqual(len(self.worker.calls), 1)
+        self.assertEqual(self.worker.releases, [])
         self.assertFalse(self.process.terminate_called)
 
     def test_early_process_exit_is_reported_without_kill(self):

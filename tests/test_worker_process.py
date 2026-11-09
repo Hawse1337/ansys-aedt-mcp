@@ -20,6 +20,7 @@ from worker_client import (
     WorkerProtocolOutputError,
     WorkerRemoteError,
     WorkerTimeoutError,
+    WorkerRecoveredError,
 )
 from worker_protocol import WorkerRequest, WorkerResponse
 
@@ -149,6 +150,11 @@ class WorkerClientTests(unittest.TestCase):
             close_all = getattr(client, "close_all", None)
             if close_all:
                 close_all()
+            # Only these test-created fake workers may be terminated. The
+            # production timeout path must leave an unknown operation alone.
+            for broker in list({id(b): b for b in client._brokers.values()}.values()):
+                self.assertEqual(client.worker_script.parent,self.root)
+                client._stop_broker(broker,graceful_timeout=0.2)
         self.temp.cleanup()
 
     def _script(self, name, source):
@@ -235,10 +241,11 @@ for line in sys.stdin:
         self.assertEqual(len(logs), 1)
         self.assertIn("worker diagnostic", logs[0].read_text(encoding="utf-8"))
 
-    def test_timeout_terminates_only_worker(self):
+    def test_timeout_retains_worker_without_replaying_request(self):
         script = self._script(
             "sleep_worker.py",
-            "import time, sys\nsys.stdin.readline()\ntime.sleep(30)\n",
+            "import time, sys, json\nr=json.loads(sys.stdin.readline())\ntime.sleep(0.4)\n"
+            "print(json.dumps(dict(request_id=r['request_id'],ok=True,result={'late':True},error=None)),flush=True)\n",
         )
         client = self._client(script, timeout=0.1)
 
@@ -247,6 +254,11 @@ for line in sys.stdin:
             client.execute(AedtTarget("pid", 7), "ping", {}, timeout=0.1)
 
         self.assertLess(time.monotonic() - started, 5.0)
+        broker = client._brokers['pid:7']
+        self.assertIsNotNone(broker.pending_request)
+        time.sleep(0.5)
+        with self.assertRaises(WorkerRecoveredError):
+            client.execute(AedtTarget('pid',7),'ping',{})
 
     def test_invalid_stdout_is_rejected(self):
         script = self._script(

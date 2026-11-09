@@ -4,3 +4,5 @@ __pycache__/
 *.bak-hardening-*
 batch.log
 test-artifacts/
+
+.aedt-hardening-backups/

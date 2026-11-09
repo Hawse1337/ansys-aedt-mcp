@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import math
 import re
 import socket
 import subprocess
 import time
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -100,6 +102,8 @@ class AedtLauncher:
         self._port_is_open = port_is_open
         self._monotonic = monotonic
         self._sleep = sleep
+        self._launch_lock = threading.Lock()
+        self._unfinished_launch: tuple[Any, int] | None = None
 
     def launch(
         self,
@@ -110,19 +114,42 @@ class AedtLauncher:
         non_graphical: bool = False,
         timeout: float | None = None,
     ) -> dict[str, Any]:
+        # A client retry must not fan out into concurrent desktop launches.
+        if not self._launch_lock.acquire(blocking=False):
+            raise AedtLaunchError("an AEDT launch is already in progress; do not retry concurrently")
+        try:
+            return self._launch_once(version=version, port=port, install_dir=install_dir,
+                                     non_graphical=non_graphical, timeout=timeout)
+        finally:
+            self._launch_lock.release()
+
+    def _launch_once(
+        self, *, version: str, port: int, install_dir: str | Path | None,
+        non_graphical: bool, timeout: float | None,
+    ) -> dict[str, Any]:
         _version_root_variable(version)
         if type(port) is not int or port < 0 or port > 65535:
             raise AedtLaunchError(f"invalid gRPC port: {port!r}")
         if type(non_graphical) is not bool:
             raise AedtLaunchError("non_graphical must be a boolean")
+        if self._unfinished_launch is not None:
+            previous, previous_port = self._unfinished_launch
+            if previous.poll() is None:
+                raise AedtLaunchError(
+                    f"previous AEDT launch PID {previous.pid}, port {previous_port} is still running; "
+                    "inspect or explicitly attach to it instead of launching another desktop"
+                )
+            self._unfinished_launch = None
         selected_port = self._choose_free_port() if port == 0 else port
+        if type(selected_port) is not int or not 0 < selected_port <= 65535:
+            raise AedtLaunchError(f"invalid selected gRPC port: {selected_port!r}")
         if not self._port_is_free(selected_port):
             raise AedtLaunchError(f"gRPC port {selected_port} is already in use")
 
         raw_timeout = (
             timeout
             if timeout is not None
-            else os.environ.get("AEDT_LAUNCH_TIMEOUT", "120")
+            else os.environ.get("AEDT_LAUNCH_TIMEOUT", "240")
         )
         if isinstance(raw_timeout, bool):
             raise AedtLaunchError("launch timeout must be positive")
@@ -130,71 +157,66 @@ class AedtLauncher:
             effective_timeout = float(raw_timeout)
         except (TypeError, ValueError) as exc:
             raise AedtLaunchError("launch timeout must be a positive number") from exc
-        if effective_timeout <= 0:
-            raise AedtLaunchError("launch timeout must be positive")
+        if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+            raise AedtLaunchError("launch timeout must be finite and positive")
 
         executable = resolve_aedt_executable(install_dir, version)
         command = [str(executable), "-grpcsrv", str(selected_port)]
         if non_graphical:
             command.append("-ng")
-        process = self._process_factory(command, cwd=str(executable.parent))
-
         deadline = self._monotonic() + effective_timeout
-        target = AedtTarget("port", selected_port)
-        last_probe_error: Exception | None = None
+        process = self._process_factory(command, cwd=str(executable.parent))
+        self._unfinished_launch = (process, selected_port)
+        # The launched PID is known even when psutil cannot enumerate the
+        # listener owner. A port-only attach would fail on those hosts.
+        target = AedtTarget("pid", int(process.pid))
         while self._monotonic() < deadline:
             returncode = process.poll()
             if returncode is not None:
+                self._unfinished_launch = None
                 raise AedtLaunchError(
                     f"AEDT exited with code {returncode} before gRPC was ready"
                 )
             if self._port_is_open(selected_port):
+                # Wait passively first, then make exactly one full-budget handshake.
+                # Repeated Desktop()/broker probes can start new AEDT processes if
+                # the vendor API falls back from an unsuccessful attach to a launch.
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    break
                 try:
                     info = self._worker_client.execute(
                         target,
                         "ping",
                         {},
-                        timeout=min(5.0, max(0.1, deadline - self._monotonic())),
+                        timeout=remaining,
                     )
-                    reported_version = (
-                        str(info.get("aedt_version", version))
-                        if isinstance(info, dict)
-                        else version
-                    )
-                    if reported_version == version:
-                        reported_pid = (
-                            info.get("pid") if isinstance(info, dict) else None
-                        )
-                        aedt_pid = (
-                            reported_pid
-                            if type(reported_pid) is int and reported_pid > 0
-                            else int(process.pid)
-                        )
-                        result = {
-                            "pid": aedt_pid,
-                            "port": selected_port,
-                            "version": version,
-                            "connection_mode": "grpc",
-                        }
-                        if non_graphical:
-                            result["non_graphical"] = True
-                        return result
+                    if not isinstance(info, dict) or info.get("connected") is not True:
+                        raise ValueError("readiness probe did not confirm a connection")
+                    if str(info.get("aedt_version")) != version:
+                        raise ValueError(f"readiness probe returned a different AEDT version: {info.get('aedt_version')!r}")
+                    if type(info.get("pid")) is not int or info["pid"] != process.pid:
+                        raise ValueError(f"readiness probe PID {info.get('pid')!r} does not match launched PID {process.pid}")
+                    if type(info.get("port")) is not int or info["port"] != selected_port:
+                        raise ValueError(f"readiness probe port {info.get('port')!r} does not match requested gRPC port {selected_port}")
+                    result = {
+                        "pid": int(process.pid), "port": selected_port,
+                        "version": version, "connection_mode": "grpc",
+                    }
+                    if non_graphical:
+                        result["non_graphical"] = True
+                    self._unfinished_launch = None
+                    return result
                 except Exception as exc:  # noqa: BLE001 - vendor readiness errors vary
-                    last_probe_error = exc
-            self._sleep(0.25)
+                    # In particular, do not kill a timed-out broker: its attach
+                    # may still be pending. Preserve it for explicit recovery.
+                    raise AedtLaunchError(
+                        f"single readiness handshake failed for AEDT PID {process.pid}, port {selected_port}; "
+                        f"no retry or termination was performed; inspect the existing session: {exc}"
+                    ) from exc
+            self._sleep(min(0.25, max(0.0, deadline - self._monotonic())))
 
-        release_error: Exception | None = None
-        try:
-            self._worker_client.release(target, timeout=2.0)
-        except Exception as exc:  # noqa: BLE001 - best-effort broker cleanup
-            release_error = exc
-        diagnostics = []
-        if last_probe_error is not None:
-            diagnostics.append(f"last readiness probe failed: {last_probe_error}")
-        if release_error is not None:
-            diagnostics.append(f"broker cleanup failed: {release_error}")
-        diagnostic_suffix = f"; {'; '.join(diagnostics)}" if diagnostics else ""
         raise AedtLaunchError(
             f"timed out after {effective_timeout:g}s waiting for AEDT gRPC port {selected_port}; "
-            f"AEDT PID {process.pid} was left running for inspection{diagnostic_suffix}"
+            f"AEDT PID {process.pid} was left running for inspection; no broker probe was started"
         )
