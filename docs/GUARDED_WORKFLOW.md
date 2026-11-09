@@ -189,6 +189,36 @@ CREATED → PREPARED → SOLVING → SOLVED → EXPORTING → VALIDATING → COM
 | 求解进程 | 求解期间 22 个 `hf3d` 进程池只有 1 个在算（实测 +3.83 s CPU/6 s），其余等待；求解结束全部自动退出 |
 | 清理 | 沙箱 AEDT 已全部关闭，机器无残留求解进程 |
 
+## 5D. 求解并行度（核数 / 任务数 / GPU）（v1.12）
+
+控制面与频点一致，三层：
+
+```json
+"execution_policy": {
+  "num_cores": 8, "num_tasks": 1, "num_gpus": 0,
+  "max_total_cores": 32,
+  "enforce_cpu_budget": false
+}
+```
+
+| 层 | 写法 | 说明 |
+|---|---|---|
+| campaign 默认 | spec 的 `execution_policy` | 不写 = 不向 HFSS 传参（老行为不变） |
+| 单次覆盖 | `submit_guarded_run(num_cores=16, num_tasks=2)` | 只影响这一次；`resume` 同样接受 |
+| 边界 | `max_total_cores` / 逻辑核数 | 默认**收敛并警告**；`enforce_cpu_budget=true` → 报 `E_CORE_BUDGET` |
+
+- `cores × tasks` 为总核数；`num_gpus=0` 不会发送（HFSS 只接受正整数或空）；
+- 解析结果回显在 `submit_guarded_run` 与 `get_run_status` 的 `solver_settings`（requested/effective/warnings）；
+- 求解并行度**不进入 cache_key**（结果与并行度无关，已用实测验证）；
+- 没有 HPC 许可却设 `tasks>1` 时不会静默失败：HFSS 的报错原样带回。
+
+实机对比（同一 5 GHz 三频点偶极子，完全相同设置）：
+
+| 并行度 | 墙钟时间 | 指标 |
+|---|---|---|
+| 1 核 | 350.9 s | gain 1.3882630552402984 dBi / s11 -6.589 dB |
+| 4 核 | **40.1 s** | gain 1.3882630552402984 dBi / s11 -6.589 dB（**逐位相同**） |
+
 ## 6. 已知限制（下一阶段处理）
 
 1. **S11 带宽依赖导出对象**：不传 `sweep_name` 时 Touchstone 只含自适应解频点；要做真实带内判定必须传

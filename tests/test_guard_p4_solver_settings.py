@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Offline tests for configurable solver parallelism (cores / tasks / GPUs)."""
 from __future__ import annotations
 
@@ -164,6 +164,7 @@ class SolverSettingsWiringTests(unittest.TestCase):
         analyze = next(args for cmd, args in self.calls if cmd == "analyze_design")
         self.assertEqual(analyze["num_cores"], 8)
         self.assertEqual(analyze["num_tasks"], 2)
+        self.assertNotIn("num_gpus", analyze)  # 0 must not be sent
         self.assertEqual(submitted["solver_settings"]["total_cores"], 16)
         self.assertEqual(status["solver_settings"]["requested"]["num_cores"], 8)
 
@@ -199,3 +200,4 @@ class SolverSettingsWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

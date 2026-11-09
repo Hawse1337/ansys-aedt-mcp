@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import asyncio
@@ -1412,7 +1412,7 @@ class _GuardedAdapter:
                 **{
                     key: value
                     for key, value in (self.solver_settings.get("effective") or {}).items()
-                    if value is not None
+                    if value not in (None, 0)
                 },
             },
         )
@@ -1880,6 +1880,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
