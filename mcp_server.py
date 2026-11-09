@@ -1,10 +1,11 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import asyncio
 import json
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,18 @@ from typing import Any, Literal
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
 
+from aedt_guard import (
+    SpecError,
+    Store,
+    evaluate as guard_evaluate,
+    hard_metrics,
+    load_spec,
+    new_spec,
+    save_spec,
+    task_context,
+    update_spec,
+)
+from aedt_guard.sim import CampaignRunner, hard_results, named_metrics
 from aedt_guidelines import get_guidelines
 from aedt_installation import check_aedt_installation
 from aedt_launcher import AedtLauncher
@@ -1164,6 +1177,405 @@ def release_campaign_lock(campaign_dir: str, holder: str) -> dict[str, Any]:
         return {"released": False, "reason": "delete_failed", "error": repr(exc)[:200]}
 
 
+# --------------------------------------------------------------------------
+# Guarded-workflow layer (v1.6): design spec, evaluation, guarded runs
+# --------------------------------------------------------------------------
+
+CAMPAIGN_DEFAULT_ROOT = os.environ.get(
+    "AEDT_CAMPAIGN_ROOT", r"D:\AgentAEDT_Collab\campaigns"
+)
+
+
+def _campaign_paths(campaign_dir: str) -> dict[str, Path]:
+    root = Path(campaign_dir or CAMPAIGN_DEFAULT_ROOT).expanduser().resolve()
+    return {
+        "root": root,
+        "spec": root / "design_spec.json",
+        "db": root / "campaign.sqlite",
+        "runs": root / "runs",
+    }
+
+
+def _load_campaign(campaign_dir: str) -> tuple[dict[str, Any], dict[str, Path]]:
+    paths = _campaign_paths(campaign_dir)
+    if not paths["spec"].is_file():
+        raise SpecError(
+            f"no design_spec.json under {paths['root']}; call spec_create first"
+        )
+    return load_spec(paths["spec"]), paths
+
+
+@mcp.tool()
+def spec_create(
+    campaign_dir: str,
+    project: str,
+    design_type: str,
+    frequency_ghz: list[float],
+    metrics: list[dict[str, Any]],
+    evaluation: dict[str, Any] | None = None,
+    execution_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create the versioned design specification for one campaign (v1.6)."""
+    spec = new_spec(
+        project,
+        design_type,
+        frequency_ghz,
+        metrics,
+        evaluation=evaluation,
+        execution_policy=execution_policy,
+    )
+    paths = _campaign_paths(campaign_dir)
+    paths["root"].mkdir(parents=True, exist_ok=True)
+    save_spec(spec, paths["spec"])
+    with Store(paths["db"]) as store:
+        store.add_spec_version(spec, reason="initial spec", approver="spec_create")
+    return {"spec_path": str(paths["spec"]), "spec": spec}
+
+
+@mcp.tool()
+def spec_get(campaign_dir: str) -> dict[str, Any]:
+    """Return the current design specification and its version history."""
+    spec, paths = _load_campaign(campaign_dir)
+    with Store(paths["db"]) as store:
+        versions = [
+            dict(row)
+            for row in store.connection.execute(
+                "SELECT version, reason, approver, created_utc FROM spec_versions "
+                "WHERE project=? ORDER BY version",
+                (spec["project"],),
+            )
+        ]
+    return {"spec_path": str(paths["spec"]), "spec": spec, "versions": versions}
+
+
+@mcp.tool()
+def spec_update_with_approval(
+    campaign_dir: str,
+    changes: dict[str, Any],
+    reason: str,
+    approver: str,
+) -> dict[str, Any]:
+    """Apply a spec change only with an explicit reason and approver (v1.6)."""
+    spec, paths = _load_campaign(campaign_dir)
+    updated = update_spec(spec, changes, reason=reason, approver=approver)
+    save_spec(updated, paths["spec"])
+    with Store(paths["db"]) as store:
+        store.add_spec_version(updated, reason=reason, approver=approver)
+    return {
+        "spec_path": str(paths["spec"]),
+        "version": updated["version"],
+        "history_entry": updated["history"][-1],
+        "spec": updated,
+    }
+
+
+@mcp.tool()
+def campaign_context(campaign_dir: str, limit: int = 5) -> dict[str, Any]:
+    """Return the machine-generated status summary for one campaign (v1.6)."""
+    spec, paths = _load_campaign(campaign_dir)
+    with Store(paths["db"]) as store:
+        runs = store.list_runs(spec["project"], limit=int(limit))
+        counts = store.counts()
+    latest = None
+    if runs:
+        latest = {
+            "run_id": runs[0]["run_id"],
+            "status": runs[0]["status"],
+            "created_utc": runs[0]["created_utc"],
+            "params": json.loads(runs[0]["params_json"]),
+        }
+        with Store(paths["db"]) as store:
+            detail = store.get_run(runs[0]["run_id"]) or {}
+        metrics = {
+            name: row.get("value") for name, row in (detail.get("metrics") or {}).items()
+        }
+        latest["metrics"] = metrics
+        # Unmet hard constraints come from the stored pass flags, not from the
+        # stage log, so a COMPLETED-but-infeasible run is reported correctly.
+        unmet = [
+            metric["id"]
+            for metric in hard_metrics(spec)
+            if (detail.get("metrics") or {}).get(metric["id"], {}).get("passed") == 0
+        ]
+        latest["unmet_constraints"] = unmet
+    context = task_context(spec, latest)
+    context["campaign_dir"] = str(paths["root"])
+    context["counts"] = counts
+    context["recent_runs"] = [
+        {"run_id": r["run_id"], "status": r["status"], "created_utc": r["created_utc"]}
+        for r in runs
+    ]
+    return context
+
+
+@mcp.tool()
+def evaluate_exported_results(
+    campaign_dir: str,
+    s11: str,
+    theta_cuts: dict[str, str] | None = None,
+    phi_cut: str | None = None,
+    frequency_ghz: float | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Evaluate already-exported artifacts against the campaign spec (v1.6)."""
+    spec, paths = _load_campaign(campaign_dir)
+    artifacts: dict[str, Any] = {"s11": s11, "theta_cuts": theta_cuts or {}}
+    if phi_cut:
+        artifacts["phi_cut"] = phi_cut
+    if frequency_ghz is not None:
+        artifacts["frequency_ghz"] = float(frequency_ghz)
+    result = guard_evaluate(artifacts, spec)
+    named = named_metrics(result, spec)
+    result["named_metrics"] = named
+    if run_id:
+        with Store(paths["db"]) as store:
+            store.add_metrics(run_id, named, hard_results(result, spec))
+        result["stored_run_id"] = run_id
+    return result
+
+
+class _GuardedAdapter:
+    """Bridge the runner to the PyAEDT worker over the existing broker."""
+
+    def __init__(
+        self,
+        *,
+        pid: int | None,
+        port: int | None,
+        project_name: str,
+        design_name: str,
+        setup_name: str,
+        cuts: list[str],
+        worker_timeout: float,
+        sweep_name: str | None = None,
+    ):
+        self.pid = pid
+        self.port = port
+        self.project_name = project_name
+        self.design_name = design_name
+        self.setup_name = setup_name
+        self.cuts = cuts
+        self.worker_timeout = worker_timeout
+        self.sweep_name = sweep_name
+
+    def _call(self, command: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        target = _target(self.pid, self.port)
+        result = worker_client.execute(
+            target, command, arguments, timeout=self.worker_timeout
+        )
+        if not isinstance(result, dict):
+            raise TypeError(f"AEDT worker command {command} returned a non-object result")
+        return result
+
+    def preflight(self) -> dict[str, Any]:
+        return self._call(
+            "preflight_design",
+            {
+                "project_name": self.project_name,
+                "design_name": self.design_name,
+                "setup_name": self.setup_name,
+            },
+        )
+
+    def submit(self) -> dict[str, Any]:
+        return self._call(
+            "analyze_design",
+            {
+                "project_name": self.project_name,
+                "design_name": self.design_name,
+                "setup_name": self.setup_name,
+                "save_before_solve": False,
+            },
+        )
+
+    def wait(self, timeout_s: float, poll_interval_s: float) -> dict[str, Any]:
+        started = time.monotonic()
+        polls = 0
+        while True:
+            status = self._call(
+                "analysis_status",
+                {
+                    "project_name": self.project_name,
+                    "design_name": self.design_name,
+                    "setup_name": self.setup_name,
+                },
+            )
+            polls += 1
+            if not status.get("running"):
+                return {"running": False, "poll_count": polls, "last": status}
+            if time.monotonic() - started >= timeout_s:
+                return {"running": True, "timed_out": True, "poll_count": polls}
+            time.sleep(poll_interval_s)
+
+    def finalize(self) -> dict[str, Any]:
+        return self._call(
+            "finalize_solve",
+            {"project_name": self.project_name, "design_name": self.design_name},
+        )
+
+    def export_touchstone(self, path: Path) -> dict[str, Any]:
+        return self._call(
+            "export_results",
+            {
+                "output_path": str(path),
+                "export_type": "touchstone",
+                "setup_name": self.setup_name,
+                **({"sweep_name": self.sweep_name} if self.sweep_name else {}),
+            },
+        )
+
+    def export_farfield(self, output_dir: Path, cuts: list[str]) -> dict[str, Any]:
+        return self._call(
+            "export_farfield_report",
+            {
+                "project_name": self.project_name,
+                "design_name": self.design_name,
+                "setup_name": self.setup_name,
+                "output_dir": str(output_dir),
+                "cuts": cuts,
+            },
+        )
+
+
+@mcp.tool()
+def submit_guarded_run(
+    campaign_dir: str,
+    project_name: str,
+    design_name: str,
+    setup_name: str = "Setup1",
+    params: dict[str, Any] | None = None,
+    cuts: list[str] | None = None,
+    timeout_s: float = 3600.0,
+    poll_interval_s: float = 5.0,
+    worker_timeout: float = 1800.0,
+    pid: int | None = None,
+    port: int | None = None,
+    frequency_ghz: float | None = None,
+    sweep_name: str | None = None,
+) -> dict[str, Any]:
+    """Submit one guarded run and return immediately with its run_id (v1.6).
+
+    The background runner performs preflight, submission, polling, save +
+    solution-data verification, artifact export and evaluation, and only then
+    marks the run COMPLETED. Query progress with ``get_run_status``.
+    """
+    spec, paths = _load_campaign(campaign_dir)
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    runs_root = paths["runs"] / run_id
+    artifact_dir = runs_root / "artifacts"
+    runs_root.mkdir(parents=True, exist_ok=True)
+    (runs_root / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "project": project_name,
+                "design": design_name,
+                "setup": setup_name,
+                "spec_version": spec["version"],
+                "params": params or {},
+                "cuts": cuts or ["theta_phi0", "phi_theta90"],
+                "frequency_ghz": frequency_ghz,
+                "created_utc": datetime.now(timezone.utc).isoformat(),
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    with Store(paths["db"]) as store:
+        store.add_run(
+            run_id,
+            spec["project"],
+            spec["version"],
+            params or {},
+            status="CREATED",
+            artifact_dir=str(artifact_dir),
+        )
+    adapter = _GuardedAdapter(
+        pid=pid,
+        port=port,
+        project_name=project_name,
+        design_name=design_name,
+        setup_name=setup_name,
+        cuts=list(cuts or ["theta_phi0", "phi_theta90"]),
+        worker_timeout=worker_timeout,
+        sweep_name=sweep_name,
+    )
+
+    def _run_in_background() -> None:
+        store = Store(paths["db"])
+        try:
+            runner = CampaignRunner(
+                store=store,
+                adapter=adapter,
+                spec=spec,
+                run_id=run_id,
+                artifact_dir=artifact_dir,
+                params=params or {},
+                cuts=list(cuts or ["theta_phi0", "phi_theta90"]),
+                timeout_s=timeout_s,
+                poll_interval_s=poll_interval_s,
+                frequency_ghz=frequency_ghz,
+            )
+            runner.run()
+        except Exception as exc:  # noqa: BLE001 - a dead thread must still be visible
+            try:
+                store.set_status(
+                    run_id,
+                    "FAILED",
+                    notes=json.dumps([{"stage": "FAILED", "error": str(exc)[:600]}]),
+                )
+            except Exception:
+                pass
+        finally:
+            store.close()
+
+    thread = threading.Thread(target=_run_in_background, name=f"guarded-{run_id}", daemon=True)
+    thread.start()
+    return {
+        "run_id": run_id,
+        "status": "RUNNING",
+        "artifact_dir": str(artifact_dir),
+        "spec_version": spec["version"],
+        "note": "background runner started; poll get_run_status until a terminal state",
+    }
+
+
+@mcp.tool()
+def get_run_status(campaign_dir: str, run_id: str | None = None) -> dict[str, Any]:
+    """Return the persisted status, stage log and metrics of one run (v1.6)."""
+    spec, paths = _load_campaign(campaign_dir)
+    with Store(paths["db"]) as store:
+        if run_id is None:
+            runs = store.list_runs(spec["project"], limit=1)
+            if not runs:
+                return {"run_id": None, "status": None, "note": "no runs recorded"}
+            run_id = runs[0]["run_id"]
+        detail = store.get_run(run_id)
+        if detail is None:
+            return {"run_id": run_id, "status": None, "note": "unknown run_id"}
+        stage_log: list[dict[str, Any]] = []
+        if detail.get("notes"):
+            try:
+                stage_log = json.loads(detail["notes"])
+            except json.JSONDecodeError:
+                stage_log = [{"stage": detail.get("status"), "note": detail["notes"]}]
+    return {
+        "run_id": run_id,
+        "status": detail["status"],
+        "params": detail["params"],
+        "artifact_dir": detail["artifact_dir"],
+        "created_utc": detail["created_utc"],
+        "updated_utc": detail["updated_utc"],
+        "metrics": {
+            name: {"value": row.get("value"), "unit": row.get("unit"), "passed": row.get("passed")}
+            for name, row in (detail.get("metrics") or {}).items()
+        },
+        "stage_log": stage_log,
+        "terminal": detail["status"] in {"COMPLETED", "FAILED", "RECOVERY_REQUIRED"},
+    }
+
+
 @mcp.resource("aedt://status")
 def aedt_status() -> str:
     """Return discovery-only status without attaching to any AEDT process."""
@@ -1189,3 +1601,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+

@@ -946,6 +946,7 @@ class OfficialCapabilities:
         )
         export_type = _optional_text(arguments, "export_type", "touchstone").lower()
         setup_name = _optional_text(arguments, "setup_name") or None
+        sweep_name = _optional_text(arguments, "sweep_name") or None
         methods = {
             "touchstone": "export_touchstone",
             "profile": "export_profile",
@@ -990,6 +991,8 @@ class OfficialCapabilities:
             kwargs = {"output_file": output}
             if setup_name:
                 kwargs["setup"] = setup_name
+            if sweep_name and export_type == "touchstone":
+                kwargs["sweep"] = sweep_name
             result = method(**kwargs)
             export_method = methods[export_type]
         evidence = None

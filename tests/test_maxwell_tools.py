@@ -203,7 +203,7 @@ class MaxwellTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_registration_and_explicit_design_schema(self):
         tools = {tool.name: tool for tool in await mcp_server.mcp.list_tools()}
-        # v1.5: 45 legacy tools plus 8 guarded-workflow tools = 53; the\n        # legacy set must remain a subset so old clients keep working.\n        self.assertEqual(len(tools), 53)
+        # v1.5: 45 legacy tools plus 8 guarded-workflow tools = 53; the\n        # legacy set must remain a subset so old clients keep working.\n        self.assertEqual(len(tools), 60)
         self.assertEqual(set(self.registry.tools), MAXWELL_COMMANDS)
         for name in MAXWELL_COMMANDS:
             self.assertIn(name, tools)
@@ -438,4 +438,5 @@ class MaxwellTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

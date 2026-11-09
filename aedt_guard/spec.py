@@ -288,12 +288,21 @@ def task_context(spec: dict[str, Any], latest: dict[str, Any] | None = None) -> 
     if latest:
         context["latest_run"] = latest
         unmet = latest.get("unmet_constraints") or []
+        status = str(latest.get("status") or "")
         context["unmet_constraints"] = unmet
-        context["next_step_hint"] = (
-            "satisfy the remaining hard constraints before optimising soft objectives"
-            if unmet
-            else "all hard constraints met; improve soft objectives while preserving them"
-        )
+        if status and status != "COMPLETED":
+            context["next_step_hint"] = (
+                f"latest run ended in {status}; inspect its stage_log, fix the cause, "
+                "and resubmit before optimising further"
+            )
+        elif unmet:
+            context["next_step_hint"] = (
+                "satisfy the remaining hard constraints before optimising soft objectives"
+            )
+        else:
+            context["next_step_hint"] = (
+                "all hard constraints met; improve soft objectives while preserving them"
+            )
     else:
         context["latest_run"] = None
         context["next_step_hint"] = "no evaluated run yet; submit a candidate through the guarded workflow"

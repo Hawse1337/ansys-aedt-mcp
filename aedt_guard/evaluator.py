@@ -19,31 +19,50 @@ class ArtifactError(ValueError):
 
 
 def read_touchstone(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
-    """Return (freq_ghz, s11_db) from a one- or two-port Touchstone file."""
+    """Return (freq_ghz, s11_db) from a one- or two-port Touchstone file.
+
+    The ``#`` option line is honoured (Hz/kHz/MHz/GHz and MA/RI/DB data
+    formats), because AEDT exports differ by project settings.
+    """
     target = Path(path)
     if not target.is_file():
         raise ArtifactError(f"touchstone not found: {target}")
+    unit_scale = 1e-9  # default GHz
+    data_format = "MA"
     freqs: list[float] = []
     s11: list[float] = []
     for line in target.read_text(encoding="utf-8", errors="replace").splitlines():
         text = line.strip()
-        if not text or text.startswith(("!", "#")):
+        if not text:
+            continue
+        if text.startswith("!"):
+            continue
+        if text.startswith("#"):
+            tokens = [token.upper() for token in text[1:].split()]
+            for token, scale in (("HZ", 1e-9), ("KHZ", 1e-6), ("MHZ", 1e-3), ("GHZ", 1.0)):
+                if token in tokens:
+                    unit_scale = scale
+                    break
+            for token in ("MA", "RI", "DB"):
+                if token in tokens:
+                    data_format = token
+                    break
             continue
         parts = text.split()
         try:
             freq = float(parts[0])
-            magnitude = float(parts[1])
-            phase = float(parts[2])
+            first = float(parts[1])
+            second = float(parts[2])
         except (IndexError, ValueError):
             continue
-        scale = 1.0
-        if freq > 1e6:  # Hz
-            scale = 1e-9
-        elif freq > 1e3:  # MHz
-            scale = 1e-3
-        freqs.append(freq * scale)
-        complex_value = magnitude * np.exp(1j * math.radians(phase))
-        s11.append(float(20.0 * np.log10(max(abs(complex_value), 1e-12))))
+        if data_format == "RI":
+            magnitude = abs(complex(first, second))
+        elif data_format == "DB":
+            magnitude = 10 ** (first / 20.0)
+        else:
+            magnitude = abs(first * np.exp(1j * math.radians(second)))
+        freqs.append(freq * unit_scale)
+        s11.append(float(20.0 * np.log10(max(magnitude, 1e-12))))
     if not freqs:
         raise ArtifactError(f"no S-parameter rows in {target}")
     order = np.argsort(freqs)

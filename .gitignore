@@ -6,3 +6,5 @@ batch.log
 test-artifacts/
 
 .aedt-hardening-backups/
+
+tmp*/
