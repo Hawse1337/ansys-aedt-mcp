@@ -1,4 +1,4 @@
-"""Design-specification management for the guarded antenna workflow.
+﻿"""Design-specification management for the guarded antenna workflow.
 
 The spec is the single authoritative source of design goals. It lives in a
 JSON file, is versioned, and can only be changed through ``update_spec`` which
@@ -49,6 +49,11 @@ DEFAULT_EXECUTION_POLICY = {
     "require_ff_sphere": True,
     "blocking_timeout_s": 3600,
     "require_convergence": True,
+    "num_cores": None,
+    "num_tasks": None,
+    "num_gpus": None,
+    "enforce_cpu_budget": False,
+    "max_total_cores": 32,
 }
 
 
@@ -155,10 +160,15 @@ def validate_spec(spec: dict[str, Any]) -> list[str]:
             value = policy.get(key, DEFAULT_EXECUTION_POLICY[key])
             if not isinstance(value, (int, float)) or value <= 0:
                 problems.append(f"execution_policy.{key} must be a positive number")
-        for key in ("save_before_solve", "require_ff_sphere", "require_convergence"):
+        for key in ("save_before_solve", "require_ff_sphere", "require_convergence",
+                    "enforce_cpu_budget"):
             value = policy.get(key, DEFAULT_EXECUTION_POLICY[key])
             if not isinstance(value, bool):
                 problems.append(f"execution_policy.{key} must be a boolean")
+        for key in ("num_cores", "num_tasks", "num_gpus", "max_total_cores"):
+            value = policy.get(key)
+            if value is not None and (not isinstance(value, int) or value < 1):
+                problems.append(f"execution_policy.{key} must be a positive integer or null");
 
     objectives = spec.get("objectives")
     if objectives is not None:
@@ -325,6 +335,74 @@ def resolve_frequencies(spec: dict[str, Any], override: list[float] | None = Non
     return freqs
 
 
+def resolve_solver_settings(
+    spec: dict[str, Any],
+    *,
+    num_cores: int | None = None,
+    num_tasks: int | None = None,
+    num_gpus: int | None = None,
+    cpu_count: int | None = None,
+) -> dict[str, Any]:
+    """Resolve the solver parallelism for one run.
+
+    Precedence: explicit override, then ``execution_policy``. Nothing requested
+    means no arguments are sent to HFSS (old behaviour). ``cores x tasks`` is
+    bounded by ``max_total_cores`` and by the machine's logical CPU count; by
+    default an over-large request is clamped and reported, and
+    ``enforce_cpu_budget=true`` turns that into ``E_CORE_BUDGET`` instead.
+    """
+    policy = spec.get("execution_policy") or {}
+    requested_cores = num_cores if num_cores is not None else policy.get("num_cores")
+    requested_tasks = num_tasks if num_tasks is not None else policy.get("num_tasks")
+    requested_gpus = num_gpus if num_gpus is not None else policy.get("num_gpus")
+    if requested_cores is None and requested_tasks is None and requested_gpus is None:
+        return {"requested": {}, "effective": {}, "warnings": [], "total_cores": None}
+
+    for name, value in (("num_cores", requested_cores), ("num_tasks", requested_tasks),
+                        ("num_gpus", requested_gpus)):
+        if value is not None and (not isinstance(value, int) or value < 1):
+            raise SpecError(f"{name} must be a positive integer")
+
+    warnings: list[str] = []
+    effective = {
+        "num_cores": int(requested_cores or 1),
+        "num_tasks": int(requested_tasks or 1),
+        "num_gpus": int(requested_gpus or 0),
+    }
+    cap = policy.get("max_total_cores")
+    available = int(cpu_count) if cpu_count is not None else None
+    total = effective["num_cores"] * effective["num_tasks"]
+    limit = int(cap) if cap else None
+    if available is not None and limit is not None:
+        limit = min(limit, available)
+    elif available is not None:
+        limit = available
+    if limit is not None and total > limit:
+        message = (
+            f"requested {effective['num_cores']} cores x {effective['num_tasks']} tasks "
+            f"= {total}, but the limit is {limit}"
+        )
+        if policy.get("enforce_cpu_budget"):
+            raise SpecError(f"E_CORE_BUDGET: {message}")
+        warnings.append(f"{message}; clamped to {limit}")
+        if effective["num_tasks"] > 1 and limit // effective["num_tasks"] >= 1:
+            effective["num_cores"] = max(1, limit // effective["num_tasks"])
+        else:
+            effective["num_tasks"] = 1
+            effective["num_cores"] = max(1, limit)
+        total = effective["num_cores"] * effective["num_tasks"]
+    return {
+        "requested": {
+            "num_cores": requested_cores,
+            "num_tasks": requested_tasks,
+            "num_gpus": requested_gpus,
+        },
+        "effective": effective,
+        "warnings": warnings,
+        "total_cores": total,
+    }
+
+
 def hard_metrics(spec: dict[str, Any]) -> list[dict[str, Any]]:
     return [m for m in spec.get("metrics", []) if m.get("hard", True)]
 
@@ -374,3 +452,4 @@ def task_context(spec: dict[str, Any], latest: dict[str, Any] | None = None) -> 
         context["latest_run"] = None
         context["next_step_hint"] = "no evaluated run yet; submit a candidate through the guarded workflow"
     return context
+

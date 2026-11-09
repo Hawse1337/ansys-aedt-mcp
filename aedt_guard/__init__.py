@@ -26,6 +26,7 @@ from .spec import (
     load_spec,
     new_spec,
     resolve_frequencies,
+    resolve_solver_settings,
     save_spec,
     soft_metrics,
     task_context,
@@ -45,6 +46,7 @@ __all__ = [
     "load_spec",
     "new_spec",
     "resolve_frequencies",
+    "resolve_solver_settings",
     "passivity",
     "peak_and_beam",
     "read_curve_csv",
@@ -59,4 +61,5 @@ __all__ = [
     "update_spec",
     "validate_spec",
 ]
+
 

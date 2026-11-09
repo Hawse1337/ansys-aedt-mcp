@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +23,7 @@ from aedt_guard import (
     load_spec,
     new_spec,
     resolve_frequencies,
+    resolve_solver_settings,
     save_spec,
     task_context,
     update_spec,
@@ -1367,6 +1368,7 @@ class _GuardedAdapter:
         worker_timeout: float,
         sweep_name: str | None = None,
         run_token: str | None = None,
+        solver_settings: dict[str, Any] | None = None,
     ):
         self.pid = pid
         self.port = port
@@ -1377,6 +1379,7 @@ class _GuardedAdapter:
         self.worker_timeout = worker_timeout
         self.sweep_name = sweep_name
         self.run_token = run_token
+        self.solver_settings = solver_settings or {}
 
     def _call(self, command: str, arguments: dict[str, Any]) -> dict[str, Any]:
         target = _target(self.pid, self.port)
@@ -1406,6 +1409,11 @@ class _GuardedAdapter:
                 "setup_name": self.setup_name,
                 "save_before_solve": False,
                 **({"run_token": self.run_token} if self.run_token else {}),
+                **{
+                    key: value
+                    for key, value in (self.solver_settings.get("effective") or {}).items()
+                    if value is not None
+                },
             },
         )
 
@@ -1502,6 +1510,9 @@ def submit_guarded_run(
     frequency_ghz: float | None = None,
     sweep_name: str | None = None,
     frequencies_ghz: list[float] | None = None,
+    num_cores: int | None = None,
+    num_tasks: int | None = None,
+    num_gpus: int | None = None,
 ) -> dict[str, Any]:
     """Submit one guarded run and return immediately with its run_id (v1.6).
 
@@ -1511,6 +1522,13 @@ def submit_guarded_run(
     """
     spec, paths = _load_campaign(campaign_dir)
     resolved_frequencies = resolve_frequencies(spec, frequencies_ghz)
+    solver = resolve_solver_settings(
+        spec,
+        num_cores=num_cores,
+        num_tasks=num_tasks,
+        num_gpus=num_gpus,
+        cpu_count=os.cpu_count(),
+    )
     cache_key = _cache_key(
         project=project_name,
         design=design_name,
@@ -1552,6 +1570,7 @@ def submit_guarded_run(
                 "cuts": cuts or ["theta_phi0", "phi_theta90"],
                 "frequency_ghz": frequency_ghz,
                 "frequencies_ghz": resolved_frequencies,
+                "solver_settings": solver,
                 "created_utc": datetime.now(timezone.utc).isoformat(),
             },
             indent=2,
@@ -1592,6 +1611,7 @@ def submit_guarded_run(
         worker_timeout=worker_timeout,
         sweep_name=sweep_name,
         run_token=str(run_token),
+        solver_settings=solver,
     )
 
     def _run_in_background() -> None:
@@ -1646,6 +1666,8 @@ def submit_guarded_run(
         "status": "RUNNING",
         "artifact_dir": str(artifact_dir),
         "spec_version": spec["version"],
+        "frequencies_ghz": resolved_frequencies,
+        "solver_settings": solver,
         "note": "background runner started; poll get_run_status until a terminal state",
     }
 
@@ -1669,11 +1691,19 @@ def get_run_status(campaign_dir: str, run_id: str | None = None) -> dict[str, An
                 stage_log = json.loads(detail["notes"])
             except json.JSONDecodeError:
                 stage_log = [{"stage": detail.get("status"), "note": detail["notes"]}]
+    solver_settings = None
+    run_json = paths["runs"] / run_id / "run.json"
+    if run_json.is_file():
+        try:
+            solver_settings = json.loads(run_json.read_text(encoding="utf-8")).get("solver_settings")
+        except (json.JSONDecodeError, OSError):
+            solver_settings = None
     return {
         "run_id": run_id,
         "status": detail["status"],
         "params": detail["params"],
         "artifact_dir": detail["artifact_dir"],
+        "solver_settings": solver_settings,
         "created_utc": detail["created_utc"],
         "updated_utc": detail["updated_utc"],
         "metrics": {
@@ -1850,6 +1880,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 
 
