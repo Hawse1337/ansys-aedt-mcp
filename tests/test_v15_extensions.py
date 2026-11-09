@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Offline tests for the v1.5 guarded-workflow extensions (no AEDT session)."""
 from __future__ import annotations
 
@@ -634,6 +634,11 @@ class ReportNameResolutionTests(unittest.TestCase):
 
         self.assertEqual(_resolve_report_name(Report()), "Report1")
 
+    def test_plain_string_is_accepted(self):
+        from pyaedt_backend import _resolve_report_name
+
+        self.assertEqual(_resolve_report_name("Plot_ABC123"), "Plot_ABC123")
+
     def test_missing_name_raises(self):
         from pyaedt_backend import BackendCommandError, _resolve_report_name
 
@@ -642,3 +647,6 @@ class ReportNameResolutionTests(unittest.TestCase):
 
         with self.assertRaises(BackendCommandError):
             _resolve_report_name(Nameless())
+
+
+

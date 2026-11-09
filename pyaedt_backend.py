@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import threading
@@ -60,6 +60,9 @@ def _resolve_report_name(report: Any) -> str:
     (2026 R1) exposes ``plot_name`` and has no ``name`` attribute, so falling
     back to ``str(report)`` produces a label that makes ``ExportToFile`` fail.
     """
+    if isinstance(report, str) and report.strip():
+        # some PyAEDT versions return the report name directly
+        return report.strip()
     for attribute in ("name", "plot_name", "internal_plot_name"):
         value = getattr(report, attribute, None)
         if isinstance(value, str) and value.strip():
@@ -949,4 +952,5 @@ class PyAedtBackend:
             "remaining": [str(item) for item in _read_value(desktop, "project_list")],
             "saved_before_close": save,
         }
+
 
