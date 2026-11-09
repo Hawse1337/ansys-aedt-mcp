@@ -16,6 +16,7 @@ dev = ["pytest>=8.0,<9"]
 pythonpath = ["."]
 
 [tool.setuptools]
+packages = ["aedt_guard"]
 py-modules = [
     "aedt_target",
     "aedt_installation",
