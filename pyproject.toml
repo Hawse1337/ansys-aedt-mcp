@@ -16,7 +16,7 @@ dev = ["pytest>=8.0,<9"]
 pythonpath = ["."]
 
 [tool.setuptools]
-packages = ["aedt_guard"]
+packages = ["aedt_guard", "antopt", "antopt.cases"]
 py-modules = [
     "aedt_target",
     "aedt_installation",
@@ -40,3 +40,4 @@ py-modules = [
 
 [tool.uv]
 package = false
+

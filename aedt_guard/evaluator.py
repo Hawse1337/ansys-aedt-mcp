@@ -211,6 +211,50 @@ def _compare(value: float, operator: str, target: float) -> bool:
     return abs(value - target) < 1e-9
 
 
+def effective_bandwidth(per_frequency_pass: list[tuple[float, bool]]) -> dict[str, Any]:
+    """Largest contiguous frequency span where every enabled constraint holds.
+
+    ``per_frequency_pass`` is ``[(freq_ghz, ok), ...]``; only frequencies with
+    real measurements may be marked ok (unsimulated points must be False).
+    """
+    points = sorted((float(f), bool(ok)) for f, ok in per_frequency_pass)
+    best_span = 0.0
+    best_range: list[float] | None = None
+    run_start: float | None = None
+    previous: float | None = None
+    for freq, ok in points:
+        if ok:
+            if run_start is None:
+                run_start = freq
+            previous = freq
+        else:
+            if run_start is not None and previous is not None:
+                span = previous - run_start
+                if span > best_span:
+                    best_span, best_range = span, [run_start, previous]
+            run_start = previous = None
+    if run_start is not None and previous is not None:
+        span = previous - run_start
+        if span > best_span:
+            best_span, best_range = span, [run_start, previous]
+    return {
+        "value": float(best_span),
+        "low_ghz": best_range[0] if best_range else None,
+        "high_ghz": best_range[1] if best_range else None,
+        "samples": len(points),
+        "per_frequency": {f"{freq:g}": ok for freq, ok in points},
+    }
+
+
+def _constraint_value(kind: str, metrics: dict[str, Any], freq_key: str) -> float | None:
+    """Per-frequency value of one metric kind, for the effective-bandwidth pass test."""
+    if kind == "s11":
+        return metrics.get("s11_freq", {}).get(freq_key)
+    payload = metrics.get(kind) or {}
+    per_frequency = payload.get("per_frequency") or {}
+    return per_frequency.get(freq_key)
+
+
 def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
     """Evaluate a candidate whose far fields were exported at several frequencies.
 
@@ -262,6 +306,34 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
         result["invalid"] = str(exc)
         result["feasible"] = False
         return result
+
+    # --- comprehensive effective bandwidth (all enabled constraints at once) ---
+    bandwidth_metric = next(
+        (m for m in spec.get("metrics", []) if m.get("kind") == "effective_bandwidth"), None
+    )
+    if bandwidth_metric is not None:
+        per_freq_pass: list[tuple[float, bool]] = []
+        for key, detail in per_frequency.items():
+            freq = float(key)
+            ok = True
+            for metric in spec.get("metrics", []):
+                kind = metric["kind"]
+                if not metric.get("hard", True) or kind == "effective_bandwidth":
+                    continue
+                if kind == "s11":
+                    value = float(np.interp(freq, freqs, s11_db))
+                elif kind == "beam_theta":
+                    value = detail.get("peak_theta")
+                else:
+                    value = detail.get(kind)
+                if value is None or (isinstance(value, float) and math.isnan(value)):
+                    ok = False
+                    break
+                if not _compare(float(value), metric["operator"], float(metric["target"])):
+                    ok = False
+                    break
+            per_freq_pass.append((freq, ok))
+        result["metrics"]["effective_bandwidth"] = effective_bandwidth(per_freq_pass)
 
     gains = [v["realized_gain_h"] for v in per_frequency.values()]
     thetas = [v["peak_theta"] for v in per_frequency.values()]

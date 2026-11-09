@@ -31,6 +31,7 @@ METRIC_KINDS = {
     "ripple",
     "sll",
     "beam_theta",
+    "effective_bandwidth",   # GHz: contiguous span where every enabled constraint holds
 }
 
 OPERATORS = {"<=", ">=", "=="}
@@ -452,4 +453,5 @@ def task_context(spec: dict[str, Any], latest: dict[str, Any] | None = None) -> 
         context["latest_run"] = None
         context["next_step_hint"] = "no evaluated run yet; submit a candidate through the guarded workflow"
     return context
+
 
