@@ -1,4 +1,4 @@
-# 受控工作流（Guarded Workflow, v1.7）
+﻿# 受控工作流（Guarded Workflow, v1.7）
 
 本文件说明 v1.6/v1.7 新增的“规格 + 评测 + 受控运行”层：它建立在 v1.5 的求解证据工具之上，
 把“Agent 自由调用 AEDT”变成“Agent 只能在规格与状态机内提交候选”。
@@ -250,6 +250,21 @@ CREATED → PREPARED → SOLVING → SOLVED → EXPORTING → VALIDATING → COM
 
 ## 6. 已知限制（下一阶段处理）
 
+### 6.0 强制终止 AEDT 会留下"孤儿求解秩"
+
+HFSS 通过 Intel MPI 拉起求解秩（`hydra_pmi_proxy` + `matrix_solution_intel*.exe`）。
+用 `Stop-Process -Force` 杀掉 `ansysedt`/`hf3d` **不会**杀掉这棵树：秩进程会带着已死亡的父进程继续算，
+表现为"没有 AEDT，却有一堆进程各占满一个核"。
+
+- 正确做法：用 `abort_analysis`（`stop_simulations(clean_stop=True)`；预算中止走的就是这条），
+  或等求解自然结束；
+- 不得已强制终止时，随后执行下面这条（先报告、确认无 AEDT 才删；本机默认策略禁止未签名脚本，需 `-ExecutionPolicy Bypass`）：
+
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\cleanup_orphan_solvers.ps1        # 只报告
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\cleanup_orphan_solvers.ps1 -Kill  # 清理
+  ```
+
 1. **S11 带宽依赖导出对象**：不传 `sweep_name` 时 Touchstone 只含自适应解频点；要做真实带内判定必须传
    `sweep_name`（本次已传 `Sweep2to3`）。建议把“必须有扫频”加入 spec 的评测参数。
 2. **单频点增益**：远场是单个频率的导出，`realized_gain_h` 用该频点的 S11 做失配修正；跨频带增益需要多频点导出。
@@ -257,3 +272,4 @@ CREATED → PREPARED → SOLVING → SOLVED → EXPORTING → VALIDATING → COM
    下一步把“收敛且无 fatal”作为 COMPLETED 的附加条件。
 4. **强制层未启用**：`run_python_code` 仍可直接调用 `Analyze`；campaign 锁目前只做建议性排他（P3 要在 worker 层校验 run_token）。
 5. **无缓存/无 Pareto/无归档**（P4）。
+
