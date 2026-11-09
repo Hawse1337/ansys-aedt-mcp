@@ -25,7 +25,9 @@ from aedt_guard import (
     task_context,
     update_spec,
 )
+from aedt_guard.audit import summarize as audit_summary
 from aedt_guard.sim import CampaignRunner, hard_results, named_metrics
+from aedt_guard.tokens import issue_token, revoke_token
 from aedt_guidelines import get_guidelines
 from aedt_installation import check_aedt_installation
 from aedt_launcher import AedtLauncher
@@ -313,6 +315,7 @@ async def run_python_code(
     code: str,
     pid: int | None = None,
     port: int | None = None,
+    run_token: str | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Execute inline Python in the persistent PyAEDT broker namespace."""
@@ -320,7 +323,7 @@ async def run_python_code(
         "run_python_code",
         pid=pid,
         port=port,
-        arguments={"code": code},
+        arguments={"code": code, **({"run_token": run_token} if run_token else {})},
         timeout=timeout,
     )
 
@@ -515,6 +518,7 @@ async def analyze_design(
     blocking_poll_interval_s: float = 5.0,
     pid: int | None = None,
     port: int | None = None,
+    run_token: str | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Validate and submit an analysis; Icepak uses safe single-core defaults.
@@ -554,6 +558,7 @@ async def analyze_design(
             "analyze_all_designs": analyze_all_designs,
             "icepak_safe_mode": icepak_safe_mode,
             "save_before_solve": save_before_solve,
+            **({"run_token": run_token} if run_token else {}),
         },
         timeout=timeout if timeout is not None else 600.0,
     )
@@ -740,6 +745,7 @@ async def start_analysis(
     pid: int | None = None,
     port: int | None = None,
     blocking: bool = False,
+    run_token: str | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Start a named HFSS analysis; non-blocking is the default."""
@@ -752,6 +758,7 @@ async def start_analysis(
             "design_name": design_name,
             "setup_name": setup_name,
             "blocking": blocking,
+            **({"run_token": run_token} if run_token else {}),
         },
         timeout=timeout,
     )
@@ -1301,6 +1308,7 @@ def campaign_context(campaign_dir: str, limit: int = 5) -> dict[str, Any]:
     context = task_context(spec, latest)
     context["campaign_dir"] = str(paths["root"])
     context["counts"] = counts
+    context["analysis_audit"] = audit_summary(paths["root"])
     context["recent_runs"] = [
         {"run_id": r["run_id"], "status": r["status"], "created_utc": r["created_utc"]}
         for r in runs
@@ -1348,6 +1356,7 @@ class _GuardedAdapter:
         cuts: list[str],
         worker_timeout: float,
         sweep_name: str | None = None,
+        run_token: str | None = None,
     ):
         self.pid = pid
         self.port = port
@@ -1357,6 +1366,7 @@ class _GuardedAdapter:
         self.cuts = cuts
         self.worker_timeout = worker_timeout
         self.sweep_name = sweep_name
+        self.run_token = run_token
 
     def _call(self, command: str, arguments: dict[str, Any]) -> dict[str, Any]:
         target = _target(self.pid, self.port)
@@ -1385,6 +1395,7 @@ class _GuardedAdapter:
                 "design_name": self.design_name,
                 "setup_name": self.setup_name,
                 "save_before_solve": False,
+                **({"run_token": self.run_token} if self.run_token else {}),
             },
         )
 
@@ -1491,6 +1502,14 @@ def submit_guarded_run(
             status="CREATED",
             artifact_dir=str(artifact_dir),
         )
+    run_token = issue_token(
+        paths["root"],
+        run_id=run_id,
+        project=project_name,
+        design=design_name,
+        setup=setup_name,
+        ttl_s=max(float(timeout_s), 600.0) + 600.0,
+    )
     adapter = _GuardedAdapter(
         pid=pid,
         port=port,
@@ -1500,6 +1519,7 @@ def submit_guarded_run(
         cuts=list(cuts or ["theta_phi0", "phi_theta90"]),
         worker_timeout=worker_timeout,
         sweep_name=sweep_name,
+        run_token=str(run_token),
     )
 
     def _run_in_background() -> None:
@@ -1529,6 +1549,7 @@ def submit_guarded_run(
                 pass
         finally:
             store.close()
+            revoke_token(run_token)
 
     thread = threading.Thread(target=_run_in_background, name=f"guarded-{run_id}", daemon=True)
     thread.start()
@@ -1601,6 +1622,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 

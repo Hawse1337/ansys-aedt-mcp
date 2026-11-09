@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import contextlib
@@ -675,6 +675,16 @@ class OfficialCapabilities:
 
     def _run_python_code(self, desktop, target, arguments, connection_kwargs):
         code = _required_text(arguments, "code")
+        from aedt_guard.audit import enforce_python_code as _enforce_python_code
+
+        _verdict = _enforce_python_code(
+            code,
+            arguments,
+            project=_optional_text(arguments, "project_name") or None,
+            design=_optional_text(arguments, "design_name") or None,
+        )
+        if not _verdict["allowed"]:
+            raise CapabilityError("E_UNGUARDED_ANALYZE: " + _verdict["reason"])
         self._exec_globals.update(
             {
                 "desktop": desktop,
@@ -765,6 +775,17 @@ class OfficialCapabilities:
         setup_name = _optional_text(arguments, "setup_name") or None
         project_name = _optional_text(arguments, "project_name") or None
         design_name = _optional_text(arguments, "design_name") or None
+        from aedt_guard.audit import enforce_analyze as _enforce_analyze
+
+        _verdict = _enforce_analyze(
+            "analyze_design",
+            arguments,
+            project=project_name,
+            design=design_name,
+            setup=setup_name,
+        )
+        if not _verdict["allowed"]:
+            raise CapabilityError("E_UNGUARDED_ANALYZE: " + _verdict["reason"])
         analyze_all = _boolean(arguments, "analyze_all_designs", False)
         if analyze_all:
             if setup_name:
@@ -1096,3 +1117,4 @@ class OfficialCapabilities:
         finally:
             if temporary:
                 target_path.unlink(missing_ok=True)
+

@@ -502,6 +502,17 @@ class PyAedtBackend:
                 ) from exc
         elif command == "start_analysis":
             kwargs["setup"] = _required_text(arguments, "setup_name")
+            from aedt_guard.audit import enforce_analyze as _enforce_analyze
+
+            _verdict = _enforce_analyze(
+                "start_analysis",
+                arguments,
+                project=project_name,
+                design=design_name,
+                setup=kwargs["setup"],
+            )
+            if not _verdict["allowed"]:
+                raise BackendCommandError("E_UNGUARDED_ANALYZE: " + _verdict["reason"])
 
         app_key = (project_name, design_name, kwargs.get("solution_type"))
         app = self._apps.get(app_key)
