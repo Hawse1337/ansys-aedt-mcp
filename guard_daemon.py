@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Resident daemon for guarded runs.
 
 Start it explicitly, or let ``submit_guarded_run`` start it on demand:
@@ -36,6 +36,8 @@ def _build_adapter(payload: dict) -> GuardedAdapter:
         cuts=list(payload.get("cuts") or ["theta_phi0", "phi_theta90"]),
         worker_timeout=float(payload.get("worker_timeout") or 1800.0),
         sweep_name=payload.get("sweep_name"),
+        farfield_setup=payload.get("farfield_setup_name"),
+        extra_setups=list(payload.get("extra_setups") or []),
         run_token=payload.get("run_token"),
         solver_settings=payload.get("solver_settings"),
     )

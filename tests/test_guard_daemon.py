@@ -303,3 +303,36 @@ class AdapterFinalizeScopeTests(unittest.TestCase):
         self.assertTrue(result["saved"])
         self.assertEqual(calls[0][0], "finalize_solve")
         self.assertEqual(calls[0][1]["setups"], ["B0_Swp"])
+
+class AdapterExtraSetupTests(unittest.TestCase):
+    def _adapter(self, **extra):
+        from aedt_guard.worker_adapter import GuardedAdapter
+
+        calls = []
+
+        class FakeClient:
+            def execute(self, target, command, arguments, timeout=None):
+                calls.append((command, dict(arguments)))
+                return {"started": True, "running": False, "path": "x"}
+
+        adapter = GuardedAdapter(
+            pid=1, port=None, project_name="p", design_name="D",
+            setup_name="B0_Swp", cuts=[], worker_timeout=5.0, client=FakeClient(),
+            **extra,
+        )
+        return adapter, calls
+
+    def test_farfield_uses_its_own_setup(self):
+        adapter, calls = self._adapter(farfield_setup="FF_Swp")
+        adapter.export_farfield(Path("out"), ["theta_phi0"])
+        self.assertEqual(calls[0][0], "export_farfield_report")
+        self.assertEqual(calls[0][1]["setup_name"], "FF_Swp")
+
+    def test_extra_setup_is_solved_explicitly(self):
+        adapter, calls = self._adapter(extra_setups=["FF_Swp"])
+        adapter.analyze_setup("FF_Swp")
+        adapter.wait_setup("FF_Swp", 1.0, 0.1)
+        self.assertEqual(calls[0][0], "analyze_design")
+        self.assertEqual(calls[0][1]["setup_name"], "FF_Swp")
+        self.assertEqual(calls[1][0], "analysis_status")
+        self.assertEqual(calls[1][1]["setup_name"], "FF_Swp")

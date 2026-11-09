@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import asyncio
@@ -1374,6 +1374,8 @@ def submit_guarded_run(
     frequency_ghz: float | None = None,
     sweep_name: str | None = None,
     frequencies_ghz: list[float] | None = None,
+    farfield_setup_name: str | None = None,
+    extra_setups: list[str] | None = None,
     num_cores: int | None = None,
     num_tasks: int | None = None,
     num_gpus: int | None = None,
@@ -1403,6 +1405,8 @@ def submit_guarded_run(
         frequency_ghz=frequency_ghz,
         frequencies_ghz=resolved_frequencies,
         sweep_name=sweep_name,
+        farfield_setup_name=farfield_setup_name,
+        extra_setups=extra_setups,
     )
     with Store(paths["db"]) as store:
         cached = store.find_completed_by_cache_key(spec["project"], cache_key)
@@ -1454,6 +1458,9 @@ def submit_guarded_run(
                 "setup_name": setup_name,
                 "pid": pid,
                 "port": port,
+                **({"farfield_setup_name": farfield_setup_name}
+                   if farfield_setup_name else {}),
+                **({"extra_setups": list(extra_setups)} if extra_setups else {}),
             },
             status="CREATED",
             artifact_dir=str(artifact_dir),
@@ -1476,6 +1483,8 @@ def submit_guarded_run(
         cuts=list(cuts or ["theta_phi0", "phi_theta90"]),
         worker_timeout=worker_timeout,
         sweep_name=sweep_name,
+        farfield_setup=farfield_setup_name,
+        extra_setups=list(extra_setups or []),
         run_token=str(run_token),
         solver_settings=solver,
         client=worker_client,
@@ -1491,6 +1500,8 @@ def submit_guarded_run(
         "frequency_ghz": frequency_ghz,
         "frequencies_ghz": resolved_frequencies,
         "sweep_name": sweep_name,
+        "farfield_setup_name": farfield_setup_name,
+        "extra_setups": list(extra_setups or []),
         "solver_settings": solver,
         "run_token": str(run_token),
         "pid": pid,

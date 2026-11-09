@@ -36,6 +36,8 @@ class GuardedAdapter:
         cuts: list[str],
         worker_timeout: float,
         sweep_name: str | None = None,
+        farfield_setup: str | None = None,
+        extra_setups: list[str] | None = None,
         run_token: str | None = None,
         solver_settings: dict[str, Any] | None = None,
         client: Any = None,
@@ -48,6 +50,8 @@ class GuardedAdapter:
         self.cuts = cuts
         self.worker_timeout = worker_timeout
         self.sweep_name = sweep_name
+        self.farfield_setup = farfield_setup
+        self.extra_setups = list(extra_setups or [])
         self.run_token = run_token
         self.solver_settings = solver_settings or {}
         self.client = client
@@ -146,7 +150,9 @@ class GuardedAdapter:
         arguments = {
             "project_name": self.project_name,
             "design_name": self.design_name,
-            "setup_name": self.setup_name,
+            # far fields often live on a dedicated setup (e.g. FF_Swp), not on
+            # the S11 setup that produced the touchstone.
+            "setup_name": self.farfield_setup or self.setup_name,
             "output_dir": str(output_dir),
             "cuts": cuts,
         }
@@ -155,6 +161,47 @@ class GuardedAdapter:
         if frequencies:
             arguments["frequencies_ghz"] = list(frequencies)
         return self._call("export_farfield_report", arguments)
+
+    def analyze_setup(self, setup_name: str) -> dict[str, Any]:
+        """Solve an additional setup needed by this run (e.g. far-field setup)."""
+        return self._call(
+            "analyze_design",
+            {
+                "project_name": self.project_name,
+                "design_name": self.design_name,
+                "setup_name": setup_name,
+                "save_before_solve": False,
+                **({
+                    key: value
+                    for key, value in (self.solver_settings.get("effective") or {}).items()
+                    if value not in (None, 0)
+                }),
+            },
+        )
+
+    def wait_setup(self, setup_name: str, timeout_s: float,
+                   poll_interval_s: float) -> dict[str, Any]:
+        started = time.monotonic()
+        polls = 0
+        saw_running = False
+        settle_s = min(float(timeout_s), max(2.0, 4.0 * float(poll_interval_s)))
+        while True:
+            status = self._call(
+                "analysis_status",
+                {"project_name": self.project_name, "design_name": self.design_name,
+                 "setup_name": setup_name},
+            )
+            polls += 1
+            running = bool(status.get("running"))
+            if running:
+                saw_running = True
+            if not running and (saw_running or (time.monotonic() - started) >= settle_s):
+                return {"running": False, "poll_count": polls, "last": status,
+                        "saw_running": saw_running}
+            if time.monotonic() - started >= timeout_s:
+                return {"running": True, "timed_out": True, "poll_count": polls,
+                        "saw_running": saw_running}
+            time.sleep(poll_interval_s)
 
     def abort(self) -> dict[str, Any]:
         return self._call("abort_analysis", {"project_name": self.project_name,
@@ -169,5 +216,7 @@ class GuardedAdapter:
                 "setup_name": self.setup_name,
             },
         )
+
+
 
 

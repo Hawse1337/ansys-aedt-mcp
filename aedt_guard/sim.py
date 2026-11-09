@@ -203,6 +203,30 @@ class CampaignRunner:
             )
             return FAILED
         self._stage("SOLVED", poll_count=waited.get("poll_count"))
+        extra = list(getattr(self.adapter, "extra_setups", None) or [])
+        if extra:
+            self._stage("SOLVING_EXTRA", setups=extra)
+            for name in extra:
+                try:
+                    self.adapter.analyze_setup(name)
+                    extra_wait = self.adapter.wait_setup(
+                        name, self.timeout_s, self.poll_interval_s
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self._fail(RECOVERY_REQUIRED,
+                               f"extra setup {name!r} failed: {exc}")
+                    return RECOVERY_REQUIRED
+                if extra_wait.get("timed_out"):
+                    self._fail(RECOVERY_REQUIRED,
+                               f"extra setup {name!r} still solving after "
+                               f"{self.timeout_s:.0f}s")
+                    return RECOVERY_REQUIRED
+            if budget_exceeded():
+                self._abort_and_fail(
+                    f"BUDGET_EXCEEDED: extra setups exceeded max_run_minutes="
+                    f"{policy.get('max_run_minutes')}"
+                )
+                return FAILED
         return self._finish()
 
     def resume(self, last_stage: str | None = None) -> str:
