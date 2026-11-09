@@ -361,3 +361,40 @@ class ExportRetryTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _export_with_retry(broken, attempts=2, delay_s=0.0)
 
+
+class ExportReconnectTests(unittest.TestCase):
+    def test_reconnect_happens_before_retry(self):
+        from aedt_guard.sim import _export_with_retry
+
+        events = []
+
+        def flaky():
+            events.append("export")
+            if events.count("export") == 1:
+                raise RuntimeError("GetSetups failed")
+            return {"ok": True}
+
+        def reconnect():
+            events.append("reconnect")
+
+        self.assertEqual(
+            _export_with_retry(flaky, attempts=2, delay_s=0.0, on_retry=reconnect),
+            {"ok": True},
+        )
+        self.assertEqual(events, ["export", "reconnect", "export"])
+
+    def test_adapter_reset_calls_disconnect(self):
+        from aedt_guard.worker_adapter import GuardedAdapter
+
+        calls = []
+
+        class FakeClient:
+            def execute(self, target, command, arguments, timeout=None):
+                calls.append(command)
+                return {"disconnected": True}
+
+        adapter = GuardedAdapter(pid=1, port=None, project_name="p", design_name="D",
+                                 setup_name="S", cuts=[], worker_timeout=5.0,
+                                 client=FakeClient())
+        adapter.reset_connection()
+        self.assertEqual(calls, ["disconnect_from_aedt"])

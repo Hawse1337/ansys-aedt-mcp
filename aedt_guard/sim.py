@@ -1,4 +1,4 @@
-"""Guarded simulation state machine and orchestration.
+﻿"""Guarded simulation state machine and orchestration.
 
 The runner owns the run lifecycle and is the only place that may advance a run
 to ``COMPLETED``. Metrics become visible only after ``VALIDATING`` finished, so
@@ -90,7 +90,8 @@ def _now() -> str:
 
 
 def _export_with_retry(export, *args: Any, attempts: int = 2,
-                       delay_s: float = 5.0, **kwargs: Any) -> Any:
+                       delay_s: float = 5.0, on_retry: Any = None,
+                       **kwargs: Any) -> Any:
     """Export immediately after a solve; AEDT occasionally refuses the first call.
 
     Report creation / file export can transiently fail when they arrive before
@@ -105,6 +106,11 @@ def _export_with_retry(export, *args: Any, attempts: int = 2,
         except Exception as exc:  # noqa: BLE001 - retried once, then re-raised
             last_error = exc
             if attempt + 1 < max(1, int(attempts)):
+                if on_retry is not None:
+                    try:
+                        on_retry()
+                    except Exception:  # noqa: BLE001 - the retry still runs
+                        pass
                 time.sleep(delay_s)
     raise last_error  # type: ignore[misc]
 
@@ -321,12 +327,14 @@ class CampaignRunner:
             artifacts["frequency_ghz"] = float(self.frequency_ghz)
         try:
             touch = _export_with_retry(
-                self.adapter.export_touchstone, self.artifact_dir / "result.s1p"
+                self.adapter.export_touchstone, self.artifact_dir / "result.s1p",
+                on_retry=getattr(self.adapter, "reset_connection", None),
             )
             artifacts["s11"] = str(touch.get("path") or self.artifact_dir / "result.s1p")
             far = _export_with_retry(
                 self.adapter.export_farfield,
                 self.artifact_dir / "farfield", self.cuts, frequencies=self.frequencies,
+                on_retry=getattr(self.adapter, "reset_connection", None),
             )
             by_frequency: dict[str, dict[str, str]] = {}
             singles: dict[str, str] = {}
@@ -389,6 +397,7 @@ class CampaignRunner:
             except Exception:  # noqa: BLE001 - archiving must not fail the run
                 pass
         return "COMPLETED"
+
 
 
 

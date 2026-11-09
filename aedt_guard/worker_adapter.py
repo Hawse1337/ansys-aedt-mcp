@@ -1,4 +1,4 @@
-"""Worker-backed adapter used by guarded runs (MCP tools and the daemon).
+﻿"""Worker-backed adapter used by guarded runs (MCP tools and the daemon).
 
 All AEDT access goes through the existing PyAEDT broker (``worker_client``), so
 the adapter inherits the same attach hardening and run-token enforcement.
@@ -203,6 +203,10 @@ class GuardedAdapter:
                         "saw_running": saw_running}
             time.sleep(poll_interval_s)
 
+    def reset_connection(self) -> dict[str, Any]:
+        """Drop the cached PyAEDT handle so the next call reattaches cleanly."""
+        return self._call("disconnect_from_aedt", {})
+
     def abort(self) -> dict[str, Any]:
         return self._call("abort_analysis", {"project_name": self.project_name,
                                              "design_name": self.design_name})
@@ -216,6 +220,9 @@ class GuardedAdapter:
                 "setup_name": self.setup_name,
             },
         )
+
+
+
 
 
 
