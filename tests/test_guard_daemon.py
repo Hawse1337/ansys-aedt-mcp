@@ -336,3 +336,28 @@ class AdapterExtraSetupTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["setup_name"], "FF_Swp")
         self.assertEqual(calls[1][0], "analysis_status")
         self.assertEqual(calls[1][1]["setup_name"], "FF_Swp")
+
+class ExportRetryTests(unittest.TestCase):
+    def test_transient_export_failure_is_retried(self):
+        from aedt_guard.sim import _export_with_retry
+
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("ExportToFile failed")
+            return {"ok": True}
+
+        self.assertEqual(_export_with_retry(flaky, attempts=2, delay_s=0.0), {"ok": True})
+        self.assertEqual(calls["n"], 2)
+
+    def test_persistent_failure_is_raised(self):
+        from aedt_guard.sim import _export_with_retry
+
+        def broken():
+            raise RuntimeError("CreateReport failed")
+
+        with self.assertRaises(RuntimeError):
+            _export_with_retry(broken, attempts=2, delay_s=0.0)
+
