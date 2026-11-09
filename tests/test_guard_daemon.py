@@ -283,3 +283,23 @@ class RecoveryWaitTests(unittest.TestCase):
         from aedt_guard.daemon import RunDaemon
 
         RunDaemon._wait_if_solving(object(), 10.0, 1.0)  # must not raise
+
+class AdapterFinalizeScopeTests(unittest.TestCase):
+    def test_finalize_probes_only_the_run_setup(self):
+        from aedt_guard.worker_adapter import GuardedAdapter
+
+        calls = []
+
+        class FakeClient:
+            def execute(self, target, command, arguments, timeout=None):
+                calls.append((command, dict(arguments)))
+                return {"saved": True, "solution_data_complete": True}
+
+        adapter = GuardedAdapter(
+            pid=1, port=None, project_name="p", design_name="D",
+            setup_name="B0_Swp", cuts=[], worker_timeout=5.0, client=FakeClient(),
+        )
+        result = adapter.finalize()
+        self.assertTrue(result["saved"])
+        self.assertEqual(calls[0][0], "finalize_solve")
+        self.assertEqual(calls[0][1]["setups"], ["B0_Swp"])
