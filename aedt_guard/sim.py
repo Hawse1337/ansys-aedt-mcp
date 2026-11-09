@@ -73,6 +73,12 @@ def hard_results(result: dict[str, Any], spec: dict[str, Any]) -> dict[str, bool
     return {metric["id"]: bool(hard.get(metric["id"], False)) for metric in spec.get("metrics", [])}
 
 
+def last_stage(stage_log: list[dict[str, Any]] | None) -> str | None:
+    """Return the most recent stage name from a persisted stage log."""
+    stages = [entry.get("stage") for entry in (stage_log or []) if entry.get("stage")]
+    return str(stages[-1]) if stages else None
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -152,7 +158,31 @@ class CampaignRunner:
             )
             return RECOVERY_REQUIRED
         self._stage("SOLVED", poll_count=waited.get("poll_count"))
+        return self._finish()
 
+    def resume(self, last_stage: str | None = None) -> str:
+        """Continue a run after a crash without re-solving.
+
+        Called when the previous process died after the solve. Everything from
+        the save/solution-data verification onwards is re-executed; the solve
+        itself is never repeated here. If the solve evidence is missing, the
+        finish path fails closed instead of pretending the run completed.
+        """
+        status = str(last_stage or "UNKNOWN")
+        if status in TERMINAL:
+            return status
+        # Keep the pre-crash stage history instead of overwriting it, so the
+        # final run log shows SOLVING/SOLVED once and the resumed stages after.
+        try:
+            detail = self.store.get_run(self.run_id) or {}
+            prior = json.loads(detail.get("notes") or "[]")
+        except Exception:  # noqa: BLE001
+            prior = []
+        if isinstance(prior, list) and prior:
+            self.stage_log = prior
+        return self._finish(resumed_from=status)
+
+    def _finish(self, resumed_from: str | None = None) -> str:
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         try:
             final = self.adapter.finalize()
@@ -167,7 +197,8 @@ class CampaignRunner:
                        + ", ".join(final.get("incomplete_setups") or []))
             return FAILED
 
-        self._stage("EXPORTING")
+        extra = {"resumed_from": resumed_from} if resumed_from else {}
+        self._stage("EXPORTING", **extra)
         artifacts: dict[str, Any] = {}
         if self.frequency_ghz is not None:
             artifacts["frequency_ghz"] = float(self.frequency_ghz)
@@ -213,3 +244,4 @@ class CampaignRunner:
         }
         self._stage("COMPLETED", **detail)
         return "COMPLETED"
+

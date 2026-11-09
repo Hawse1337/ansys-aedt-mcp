@@ -26,7 +26,7 @@ from aedt_guard import (
     update_spec,
 )
 from aedt_guard.audit import summarize as audit_summary
-from aedt_guard.sim import CampaignRunner, hard_results, named_metrics
+from aedt_guard.sim import CampaignRunner, hard_results, last_stage, named_metrics
 from aedt_guard.tokens import issue_token, revoke_token
 from aedt_guidelines import get_guidelines
 from aedt_installation import check_aedt_installation
@@ -1498,7 +1498,12 @@ def submit_guarded_run(
             run_id,
             spec["project"],
             spec["version"],
-            params or {},
+            {
+                **(params or {}),
+                "project_name": project_name,
+                "design_name": design_name,
+                "setup_name": setup_name,
+            },
             status="CREATED",
             artifact_dir=str(artifact_dir),
         )
@@ -1597,6 +1602,93 @@ def get_run_status(campaign_dir: str, run_id: str | None = None) -> dict[str, An
     }
 
 
+@mcp.tool()
+def resume_guarded_run(
+    campaign_dir: str,
+    run_id: str,
+    pid: int | None = None,
+    port: int | None = None,
+    cuts: list[str] | None = None,
+    sweep_name: str | None = None,
+    frequency_ghz: float | None = None,
+    worker_timeout: float = 1800.0,
+) -> dict[str, Any]:
+    """Resume a crashed run from the save/export stage without re-solving (v1.9).
+
+    Use this when the process that owned ``submit_guarded_run`` died after the
+    solve (run stuck in SOLVING/SOLVED/EXPORTING). The solver is never started
+    again here: the run is finished from the saved solution data, and it fails
+    closed when that evidence is missing.
+    """
+    spec, paths = _load_campaign(campaign_dir)
+    with Store(paths["db"]) as store:
+        detail = store.get_run(run_id)
+    if detail is None:
+        raise ValueError(f"unknown run_id: {run_id}")
+    if detail["status"] in {"COMPLETED", "FAILED"}:
+        return {
+            "run_id": run_id,
+            "status": detail["status"],
+            "resumed": False,
+            "note": "run already reached a terminal state",
+        }
+    try:
+        stage_log = json.loads(detail.get("notes") or "[]")
+    except json.JSONDecodeError:
+        stage_log = []
+    stage = last_stage(stage_log) or "CREATED"
+    artifact_dir = Path(detail["artifact_dir"] or (paths["runs"] / run_id / "artifacts"))
+    adapter = _GuardedAdapter(
+        pid=pid,
+        port=port,
+        project_name=str(detail["params"].get("project_name") or ""),
+        design_name=str(detail["params"].get("design_name") or ""),
+        setup_name=str(detail["params"].get("setup_name") or ""),
+        cuts=list(cuts or ["theta_phi0", "phi_theta90"]),
+        worker_timeout=worker_timeout,
+        sweep_name=sweep_name,
+    )
+    if not adapter.project_name or not adapter.design_name:
+        raise ValueError(
+            "run metadata lacks project/design; cannot resume without them"
+        )
+
+    def _resume_in_background() -> None:
+        store = Store(paths["db"])
+        try:
+            runner = CampaignRunner(
+                store=store,
+                adapter=adapter,
+                spec=spec,
+                run_id=run_id,
+                artifact_dir=artifact_dir,
+                cuts=list(cuts or ["theta_phi0", "phi_theta90"]),
+                frequency_ghz=frequency_ghz,
+            )
+            runner.resume(stage)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                store.set_status(
+                    run_id,
+                    "FAILED",
+                    notes=json.dumps([{"stage": "FAILED", "error": f"resume: {exc}"[:600]}]),
+                )
+            except Exception:
+                pass
+        finally:
+            store.close()
+
+    thread = threading.Thread(target=_resume_in_background, name=f"resume-{run_id}", daemon=True)
+    thread.start()
+    return {
+        "run_id": run_id,
+        "status": "RUNNING",
+        "resumed_from": stage,
+        "artifact_dir": str(artifact_dir),
+        "note": "resuming from the save/export stage; no solve is started",
+    }
+
+
 @mcp.resource("aedt://status")
 def aedt_status() -> str:
     """Return discovery-only status without attaching to any AEDT process."""
@@ -1622,6 +1714,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 
 

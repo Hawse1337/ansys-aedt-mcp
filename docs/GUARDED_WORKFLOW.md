@@ -103,6 +103,28 @@ CREATED → PREPARED → SOLVING → SOLVED → EXPORTING → VALIDATING → COM
 
 实测中还确认了一个副作用：被拒绝的调用**不会**启动求解（`analyze_setup` 未被调用），也没有污染工程。
 
+## 5A. 崩溃恢复（P4-1，v1.9）
+
+求解很贵，进程崩溃不应该让求解白做。v1.9 增加 `resume_guarded_run`：
+
+| 情形 | 行为 |
+|---|---|
+| 进程在 `SOLVING/SOLVED/EXPORTING` 时死亡 | 状态停在最后一步（非终态），重启后可恢复 |
+| `resume_guarded_run(campaign_dir, run_id, pid/port)` | 从**保存校验 + 导出 + 评测**继续，**绝不重新求解** |
+| 解数据缺失（工程没保存/被改） | 失败关闭（FAILED），不会伪造 COMPLETED |
+| 已 COMPLETED/FAILED | 直接返回原状态，不重复执行 |
+
+实机演练（AEDT 2026 R1，5 GHz 偶极子，5 分钟内两次）：
+
+| 阶段 | 观察 |
+|---|---|
+| 提交后在第 4 步人为 `os._exit`（模拟宿主进程被杀） | 状态停在 `EXPORTING`，MCP server 进程消失，AEDT 仍在，产物只有 `result.s1p`（远场未导出） |
+| `resume_guarded_run` | `resumed_from=EXPORTING`，随后 `VALIDATING → COMPLETED` |
+| 恢复后阶段日志 | `PREPARED, SOLVING, SOLVED, EXPORTING, EXPORTING(resumed_from), VALIDATING, COMPLETED` |
+| 指标 | 与崩溃前那次求解完全一致（gain 2.0658 dBi、s11 -7.6356 dB），**证明复用同一份解，没有重算** |
+
+要点：状态日志在恢复时**保留原有历史**（只追加），所以"求解只发生一次"在日志里可核对。
+
 ## 6. 已知限制（下一阶段处理）
 
 1. **S11 带宽依赖导出对象**：不传 `sweep_name` 时 Touchstone 只含自适应解频点；要做真实带内判定必须传

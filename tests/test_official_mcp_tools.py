@@ -94,7 +94,7 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
         registered = {tool.name for tool in await mcp_server.mcp.list_tools()}
 
         self.assertTrue(expected.issubset(registered))
-        self.assertEqual(len(registered), 60)  # v1.5: 45 + 8 guarded + v1.6: 7 campaign tools
+        self.assertEqual(len(registered), 61)  # v1.5: 45 + 8 guarded + v1.6: 7 campaign + v1.9: resume
 
     async def test_targeted_status_and_connect_use_explicit_target(self):
         status = await mcp_server.check_aedt_status(pid=101)
@@ -203,5 +203,6 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
