@@ -53,6 +53,22 @@ _ATTACH_LOCK = threading.RLock()
 _AUDITED_PYAEDT_VERSION = "1.9.0"
 
 
+def _resolve_report_name(report: Any) -> str:
+    """Return the identifier ``export_report_to_csv`` expects.
+
+    PyAEDT returns different report classes per category: a ``FarField`` report
+    (2026 R1) exposes ``plot_name`` and has no ``name`` attribute, so falling
+    back to ``str(report)`` produces a label that makes ``ExportToFile`` fail.
+    """
+    for attribute in ("name", "plot_name", "internal_plot_name"):
+        value = getattr(report, attribute, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    raise BackendCommandError(
+        "could not resolve the report name (tried name/plot_name/internal_plot_name)"
+    )
+
+
 def _existing_target_owner(kwargs: Mapping[str, Any]) -> tuple[int, float]:
     """Prove the explicit local target exists without invoking a vendor client."""
     import psutil
@@ -797,7 +813,7 @@ class PyAedtBackend:
                     variations=variant,
                     plot_type="Rectangular Plot",
                 )
-                report_name = getattr(rep, "name", None) or str(rep)
+                report_name = _resolve_report_name(rep)
                 exported = Path(post.export_report_to_csv(out_dir, report_name))
                 rows = 0
                 if exported.is_file():

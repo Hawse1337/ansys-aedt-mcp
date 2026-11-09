@@ -615,3 +615,30 @@ class WindowsAppControlWarningTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ReportNameResolutionTests(unittest.TestCase):
+    def test_farfield_plot_name_is_used(self):
+        from pyaedt_backend import _resolve_report_name
+
+        class FarField:
+            plot_name = "Plot_NFZRPN"
+
+        self.assertEqual(_resolve_report_name(FarField()), "Plot_NFZRPN")
+
+    def test_name_wins_when_present(self):
+        from pyaedt_backend import _resolve_report_name
+
+        class Report:
+            name = "Report1"
+            plot_name = "Plot_X"
+
+        self.assertEqual(_resolve_report_name(Report()), "Report1")
+
+    def test_missing_name_raises(self):
+        from pyaedt_backend import BackendCommandError, _resolve_report_name
+
+        class Nameless:
+            pass
+
+        with self.assertRaises(BackendCommandError):
+            _resolve_report_name(Nameless())
