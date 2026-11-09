@@ -1353,145 +1353,7 @@ def evaluate_exported_results(
     return result
 
 
-class _GuardedAdapter:
-    """Bridge the runner to the PyAEDT worker over the existing broker."""
-
-    def __init__(
-        self,
-        *,
-        pid: int | None,
-        port: int | None,
-        project_name: str,
-        design_name: str,
-        setup_name: str,
-        cuts: list[str],
-        worker_timeout: float,
-        sweep_name: str | None = None,
-        run_token: str | None = None,
-        solver_settings: dict[str, Any] | None = None,
-    ):
-        self.pid = pid
-        self.port = port
-        self.project_name = project_name
-        self.design_name = design_name
-        self.setup_name = setup_name
-        self.cuts = cuts
-        self.worker_timeout = worker_timeout
-        self.sweep_name = sweep_name
-        self.run_token = run_token
-        self.solver_settings = solver_settings or {}
-
-    def _call(self, command: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        target = _target(self.pid, self.port)
-        result = worker_client.execute(
-            target, command, arguments, timeout=self.worker_timeout
-        )
-        if not isinstance(result, dict):
-            raise TypeError(f"AEDT worker command {command} returned a non-object result")
-        return result
-
-    def preflight(self) -> dict[str, Any]:
-        return self._call(
-            "preflight_design",
-            {
-                "project_name": self.project_name,
-                "design_name": self.design_name,
-                "setup_name": self.setup_name,
-            },
-        )
-
-    def submit(self) -> dict[str, Any]:
-        return self._call(
-            "analyze_design",
-            {
-                "project_name": self.project_name,
-                "design_name": self.design_name,
-                "setup_name": self.setup_name,
-                "save_before_solve": False,
-                **({"run_token": self.run_token} if self.run_token else {}),
-                **{
-                    key: value
-                    for key, value in (self.solver_settings.get("effective") or {}).items()
-                    if value not in (None, 0)
-                },
-            },
-        )
-
-    def wait(self, timeout_s: float, poll_interval_s: float) -> dict[str, Any]:
-        started = time.monotonic()
-        polls = 0
-        saw_running = False
-        settle_s = min(float(timeout_s), max(2.0, 4.0 * float(poll_interval_s)))
-        while True:
-            status = self._call(
-                "analysis_status",
-                {
-                    "project_name": self.project_name,
-                    "design_name": self.design_name,
-                    "setup_name": self.setup_name,
-                },
-            )
-            polls += 1
-            running = bool(status.get("running"))
-            if running:
-                saw_running = True
-            if not running:
-                # AEDT can report idle for a few seconds before the solver shows
-                # up; do not treat that as completion until either the solver was
-                # observed running, or the settle window has elapsed.
-                if saw_running or (time.monotonic() - started) >= settle_s:
-                    return {"running": False, "poll_count": polls, "last": status,
-                            "saw_running": saw_running}
-            if time.monotonic() - started >= timeout_s:
-                return {"running": True, "timed_out": True, "poll_count": polls,
-                        "saw_running": saw_running}
-            time.sleep(poll_interval_s)
-
-    def finalize(self) -> dict[str, Any]:
-        return self._call(
-            "finalize_solve",
-            {"project_name": self.project_name, "design_name": self.design_name},
-        )
-
-    def export_touchstone(self, path: Path) -> dict[str, Any]:
-        return self._call(
-            "export_results",
-            {
-                "output_path": str(path),
-                "export_type": "touchstone",
-                "setup_name": self.setup_name,
-                **({"sweep_name": self.sweep_name} if self.sweep_name else {}),
-            },
-        )
-
-    def export_farfield(self, output_dir: Path, cuts: list[str],
-                        frequencies: list[float] | None = None) -> dict[str, Any]:
-        arguments = {
-            "project_name": self.project_name,
-            "design_name": self.design_name,
-            "setup_name": self.setup_name,
-            "output_dir": str(output_dir),
-            "cuts": cuts,
-        }
-        if self.sweep_name:
-            arguments["sweep_name"] = self.sweep_name
-        if frequencies:
-            arguments["frequencies_ghz"] = list(frequencies)
-        return self._call("export_farfield_report", arguments)
-
-    def abort(self) -> dict[str, Any]:
-        return self._call("abort_analysis", {"project_name": self.project_name,
-                                             "design_name": self.design_name})
-
-    def export_convergence(self, path: Path) -> dict[str, Any]:
-        return self._call(
-            "export_results",
-            {
-                "output_path": str(path),
-                "export_type": "convergence",
-                "setup_name": self.setup_name,
-            },
-        )
+from aedt_guard.worker_adapter import GuardedAdapter as _GuardedAdapter
 
 
 @mcp.tool()
@@ -1612,6 +1474,7 @@ def submit_guarded_run(
         sweep_name=sweep_name,
         run_token=str(run_token),
         solver_settings=solver,
+        client=worker_client,
     )
 
     def _run_in_background() -> None:
@@ -1798,6 +1661,7 @@ def resume_guarded_run(
         cuts=list(cuts or ["theta_phi0", "phi_theta90"]),
         worker_timeout=worker_timeout,
         sweep_name=sweep_name,
+        client=worker_client,
     )
     if not adapter.project_name or not adapter.design_name:
         raise ValueError(
@@ -1880,6 +1744,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
