@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS runs (
     artifact_dir TEXT,
     created_utc TEXT NOT NULL,
     updated_utc TEXT NOT NULL,
-    notes TEXT
+    notes TEXT,
+    cache_key TEXT
 );
 CREATE TABLE IF NOT EXISTS metrics (
     run_id TEXT NOT NULL,
@@ -65,7 +66,13 @@ class Store:
         with self._lock:
             self.connection.execute("PRAGMA journal_mode=WAL")
             self.connection.executescript(SCHEMA)
+            self._migrate()
             self.connection.commit()
+
+    def _migrate(self) -> None:
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(runs)")}
+        if "cache_key" not in columns:
+            self.connection.execute("ALTER TABLE runs ADD COLUMN cache_key TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -102,11 +109,12 @@ class Store:
         status: str = "submitted",
         artifact_dir: str | None = None,
         notes: str | None = None,
+        cache_key: str | None = None,
     ) -> None:
         stamp = _now()
         with self._lock:
             self.connection.execute(
-                "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id,
                     project,
@@ -117,6 +125,7 @@ class Store:
                     stamp,
                     stamp,
                     notes,
+                    cache_key,
                 ),
             )
             self.connection.commit()
@@ -193,6 +202,28 @@ class Store:
             "value": row["value"],
             "params": json.loads(row["params_json"]),
         }
+
+    def find_completed_by_cache_key(self, project: str, cache_key: str) -> dict[str, Any] | None:
+        """Return the newest COMPLETED run with the same cache key, if any."""
+        if not cache_key:
+            return None
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT * FROM runs WHERE project=? AND cache_key=? AND status='COMPLETED' "
+                "ORDER BY created_utc DESC LIMIT 1",
+                (project, cache_key),
+            ).fetchone()
+            if row is None:
+                return None
+            payload = dict(row)
+            payload["params"] = json.loads(payload.pop("params_json"))
+            payload["metrics"] = {
+                item["name"]: dict(item)
+                for item in self.connection.execute(
+                    "SELECT * FROM metrics WHERE run_id=?", (payload["run_id"],)
+                )
+            }
+        return payload
 
     def counts(self) -> dict[str, int]:
         with self._lock:

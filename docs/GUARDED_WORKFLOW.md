@@ -125,6 +125,41 @@ CREATED → PREPARED → SOLVING → SOLVED → EXPORTING → VALIDATING → COM
 
 要点：状态日志在恢复时**保留原有历史**（只追加），所以"求解只发生一次"在日志里可核对。
 
+## 5B. 缓存、归档与收敛门（P4-2/3/4，v1.10）
+
+### 缓存命中
+`submit_guarded_run` 先算 `cache_key = sha256(project/design/setup/spec_version/params/cuts/frequency/sweep)`；命中同一 `campaign` 下**已 COMPLETED** 的 run 时直接返回：
+
+```json
+{"run_id": "<原 run>", "status": "COMPLETED", "cached": true, "metrics": {...}}
+```
+
+不启动 worker、不求解、不导出。参数或规格版本变化即 miss。
+
+### 归档与覆盖保护
+- `archive_query(campaign_dir)` 返回 `best`、`pareto_front`、`ranked`；
+- 目标函数默认“最大化 realized_gain_h”，可用 spec 的 `objectives` 声明多目标（如同时最小化 s11）；
+- `commit_best` 在 COMPLETED 后自动执行：
+  - 有可行最优时，**不可行候选不能覆盖**（`refused_infeasible_overwrite`）；
+  - 更好的可行候选才替换（`not_better_than_best` 否则拒绝）；
+  - 尚无可行解时记录“已知最优（不可行）”并标注 `feasible=false`。
+
+### 收敛证据门
+- `execution_policy.require_convergence`（默认 `true`）；
+- COMPLETED 之前导出 `.conv` 并用 `solve_evidence.summarize_hfss_convergence` 判定；
+- `assessment != "converged"` 且 `native_converged != true` → **FAILED（E_NOT_CONVERGED）**，不给指标；
+- 注意：若工程里是**旧解**，此处会正确地拒绝（实测中正是这样挡住的）。
+
+### 实机验证（AEDT 2026 R1，5 GHz 偶极子）
+
+| 项 | 结果 |
+|---|---|
+| 干净重算一次（313 s） | COMPLETED，`convergence={"native_converged": true, "assessment": "converged", "target_delta_s": 0.1}` |
+| 指标 | `gain_h` 1.85 dBi（过）、`s11` -6.59 dB（硬约束未过） |
+| 相同参数再次提交 | **cached=true**，返回同一 run_id，耗时 **0.0 s** |
+| `archive_query` | `best` 指向该 run（`feasible=false`，因无可行解）、`pareto_front=[]`、`ranked` 按目标排序 |
+| 旧解/未收敛解 | 两次被 `E_NOT_CONVERGED` 拒绝，未产出指标 |
+
 ## 6. 已知限制（下一阶段处理）
 
 1. **S11 带宽依赖导出对象**：不传 `sweep_name` 时 Touchstone 只含自适应解频点；要做真实带内判定必须传

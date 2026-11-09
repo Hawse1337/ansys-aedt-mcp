@@ -48,6 +48,7 @@ DEFAULT_EXECUTION_POLICY = {
     "save_before_solve": False,
     "require_ff_sphere": True,
     "blocking_timeout_s": 3600,
+    "require_convergence": True,
 }
 
 
@@ -154,10 +155,28 @@ def validate_spec(spec: dict[str, Any]) -> list[str]:
             value = policy.get(key, DEFAULT_EXECUTION_POLICY[key])
             if not isinstance(value, (int, float)) or value <= 0:
                 problems.append(f"execution_policy.{key} must be a positive number")
-        for key in ("save_before_solve", "require_ff_sphere"):
+        for key in ("save_before_solve", "require_ff_sphere", "require_convergence"):
             value = policy.get(key, DEFAULT_EXECUTION_POLICY[key])
             if not isinstance(value, bool):
                 problems.append(f"execution_policy.{key} must be a boolean")
+
+    objectives = spec.get("objectives")
+    if objectives is not None:
+        if not isinstance(objectives, list) or not objectives:
+            problems.append("objectives must be a non-empty list when present")
+        else:
+            metric_ids = {
+                m.get("id") for m in metrics if isinstance(m, dict) and m.get("id")
+            }
+            for index, objective in enumerate(objectives):
+                where = f"objectives[{index}]"
+                if not isinstance(objective, dict):
+                    problems.append(f"{where} must be an object")
+                    continue
+                if objective.get("metric") not in metric_ids:
+                    problems.append(f"{where}.metric must reference an existing metric id")
+                if objective.get("direction") not in {"maximize", "minimize"}:
+                    problems.append(f"{where}.direction must be maximize or minimize")
     return problems
 
 
@@ -168,6 +187,7 @@ def new_spec(
     metrics: list[dict[str, Any]],
     evaluation: dict[str, Any] | None = None,
     execution_policy: dict[str, Any] | None = None,
+    objectives: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build a version-1 spec and validate it before returning."""
     spec = {
@@ -181,6 +201,8 @@ def new_spec(
         "execution_policy": {**DEFAULT_EXECUTION_POLICY, **(execution_policy or {})},
         "history": [],
     }
+    if objectives:
+        spec["objectives"] = objectives
     problems = validate_spec(spec)
     if problems:
         raise SpecError("; ".join(problems))

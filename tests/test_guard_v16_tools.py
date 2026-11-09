@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Offline tests for the v1.6 guarded-run tools and state machine."""
 from __future__ import annotations
 
@@ -263,6 +263,10 @@ class GuardedToolsTests(unittest.TestCase):
             if command == "export_results":
                 path = Path(arguments["output_path"])
                 path.parent.mkdir(parents=True, exist_ok=True)
+                if arguments.get("export_type") == "convergence":
+                    path.write_text("convergence", encoding="utf-8")
+                    return {"path": str(path), "evidence": {"assessment": "converged",
+                                                             "native_converged": True}}
                 _write_s1p(path)
                 return {"path": str(path)}
             if command == "export_farfield_report":
@@ -297,4 +301,5 @@ class GuardedToolsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

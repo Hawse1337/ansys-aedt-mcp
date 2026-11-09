@@ -50,6 +50,8 @@ class Adapter(Protocol):
 
     def export_farfield(self, output_dir: Path, cuts: list[str]) -> dict[str, Any]: ...
 
+    def export_convergence(self, path: Path) -> dict[str, Any]: ...
+
 
 def named_metrics(result: dict[str, Any], spec: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Map evaluator output (keyed by metric kind) onto spec metric ids."""
@@ -101,6 +103,7 @@ class CampaignRunner:
         frequency_ghz: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
         evaluator: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
+        on_completed: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.store = store
         self.adapter = adapter
@@ -114,6 +117,7 @@ class CampaignRunner:
         self.frequency_ghz = frequency_ghz
         self.sleep = sleep
         self.evaluator = evaluator
+        self.on_completed = on_completed
         self.stage_log: list[dict[str, Any]] = []
 
     # ---------------------------------------------------------------- helpers
@@ -199,6 +203,34 @@ class CampaignRunner:
 
         extra = {"resumed_from": resumed_from} if resumed_from else {}
         self._stage("EXPORTING", **extra)
+
+        policy = self.spec.get("execution_policy") or {}
+        require_convergence = bool(policy.get("require_convergence", True))
+        convergence_evidence: dict[str, Any] | None = None
+        if require_convergence:
+            exporter = getattr(self.adapter, "export_convergence", None)
+            if callable(exporter):
+                try:
+                    convergence = exporter(self.artifact_dir / "convergence.conv")
+                except Exception as exc:  # noqa: BLE001
+                    self._fail(FAILED, f"convergence export failed (E_NOT_CONVERGED): {exc}")
+                    return FAILED
+                evidence = (
+                    convergence.get("evidence")
+                    or convergence.get("evidence_summary")
+                    or {}
+                )
+                convergence_evidence = evidence
+                assessment = str(evidence.get("assessment") or "").lower()
+                native = evidence.get("native_converged")
+                if assessment != "converged" and native is not True:
+                    self._fail(
+                        FAILED,
+                        "adaptive convergence was not proven for this solve "
+                        f"(assessment={assessment or 'missing'}, native={native}); "
+                        "E_NOT_CONVERGED",
+                    )
+                    return FAILED
         artifacts: dict[str, Any] = {}
         if self.frequency_ghz is not None:
             artifacts["frequency_ghz"] = float(self.frequency_ghz)
@@ -241,7 +273,21 @@ class CampaignRunner:
             "invalid": result.get("invalid"),
             "unmet": result.get("unmet"),
             "artifacts": artifacts,
+            "convergence": convergence_evidence,
         }
         self._stage("COMPLETED", **detail)
+        if self.on_completed is not None:
+            try:
+                self.on_completed({
+                    "run_id": self.run_id,
+                    "feasible": bool(result.get("feasible")),
+                    "metrics": named_metrics(result, self.spec),
+                    "params": self.params,
+                    "artifacts": artifacts,
+                    "convergence": convergence_evidence,
+                })
+            except Exception:  # noqa: BLE001 - archiving must not fail the run
+                pass
         return "COMPLETED"
+
 

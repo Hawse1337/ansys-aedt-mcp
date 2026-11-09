@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,14 @@ from aedt_guard import (
     save_spec,
     task_context,
     update_spec,
+)
+from aedt_guard.archive import (
+    commit_best,
+    default_objectives,
+    is_feasible,
+    pareto_front,
+    rank,
+    read_best,
 )
 from aedt_guard.audit import summarize as audit_summary
 from aedt_guard.sim import CampaignRunner, hard_results, last_stage, named_metrics
@@ -1402,6 +1411,8 @@ class _GuardedAdapter:
     def wait(self, timeout_s: float, poll_interval_s: float) -> dict[str, Any]:
         started = time.monotonic()
         polls = 0
+        saw_running = False
+        settle_s = min(float(timeout_s), max(2.0, 4.0 * float(poll_interval_s)))
         while True:
             status = self._call(
                 "analysis_status",
@@ -1412,10 +1423,19 @@ class _GuardedAdapter:
                 },
             )
             polls += 1
-            if not status.get("running"):
-                return {"running": False, "poll_count": polls, "last": status}
+            running = bool(status.get("running"))
+            if running:
+                saw_running = True
+            if not running:
+                # AEDT can report idle for a few seconds before the solver shows
+                # up; do not treat that as completion until either the solver was
+                # observed running, or the settle window has elapsed.
+                if saw_running or (time.monotonic() - started) >= settle_s:
+                    return {"running": False, "poll_count": polls, "last": status,
+                            "saw_running": saw_running}
             if time.monotonic() - started >= timeout_s:
-                return {"running": True, "timed_out": True, "poll_count": polls}
+                return {"running": True, "timed_out": True, "poll_count": polls,
+                        "saw_running": saw_running}
             time.sleep(poll_interval_s)
 
     def finalize(self) -> dict[str, Any]:
@@ -1447,6 +1467,16 @@ class _GuardedAdapter:
             },
         )
 
+    def export_convergence(self, path: Path) -> dict[str, Any]:
+        return self._call(
+            "export_results",
+            {
+                "output_path": str(path),
+                "export_type": "convergence",
+                "setup_name": self.setup_name,
+            },
+        )
+
 
 @mcp.tool()
 def submit_guarded_run(
@@ -1471,6 +1501,30 @@ def submit_guarded_run(
     marks the run COMPLETED. Query progress with ``get_run_status``.
     """
     spec, paths = _load_campaign(campaign_dir)
+    cache_key = _cache_key(
+        project=project_name,
+        design=design_name,
+        setup=setup_name,
+        spec_version=spec["version"],
+        params=params or {},
+        cuts=cuts or ["theta_phi0", "phi_theta90"],
+        frequency_ghz=frequency_ghz,
+        sweep_name=sweep_name,
+    )
+    with Store(paths["db"]) as store:
+        cached = store.find_completed_by_cache_key(spec["project"], cache_key)
+    if cached is not None:
+        return {
+            "run_id": cached["run_id"],
+            "status": "COMPLETED",
+            "cached": True,
+            "spec_version": spec["version"],
+            "metrics": {
+                name: row.get("value") for name, row in (cached.get("metrics") or {}).items()
+            },
+            "artifact_dir": cached.get("artifact_dir"),
+            "note": "identical parameters and spec version already completed; no solve started",
+        }
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     runs_root = paths["runs"] / run_id
     artifact_dir = runs_root / "artifacts"
@@ -1506,6 +1560,7 @@ def submit_guarded_run(
             },
             status="CREATED",
             artifact_dir=str(artifact_dir),
+            cache_key=cache_key,
         )
     run_token = issue_token(
         paths["root"],
@@ -1529,6 +1584,20 @@ def submit_guarded_run(
 
     def _run_in_background() -> None:
         store = Store(paths["db"])
+
+        def _on_completed(payload: dict[str, Any]) -> None:
+            commit_best(
+                paths["root"],
+                {
+                    "run_id": payload.get("run_id") or run_id,
+                    "spec_version": spec["version"],
+                    "metrics": payload.get("metrics") or {},
+                    "params": payload.get("params") or {},
+                    "feasible": bool(payload.get("feasible")),
+                },
+                spec,
+            )
+
         try:
             runner = CampaignRunner(
                 store=store,
@@ -1541,6 +1610,7 @@ def submit_guarded_run(
                 timeout_s=timeout_s,
                 poll_interval_s=poll_interval_s,
                 frequency_ghz=frequency_ghz,
+                on_completed=_on_completed,
             )
             runner.run()
         except Exception as exc:  # noqa: BLE001 - a dead thread must still be visible
@@ -1602,6 +1672,44 @@ def get_run_status(campaign_dir: str, run_id: str | None = None) -> dict[str, An
     }
 
 
+def _cache_key(**fields: Any) -> str:
+    payload = json.dumps(fields, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@mcp.tool()
+def archive_query(campaign_dir: str, limit: int = 20) -> dict[str, Any]:
+    """Return the archived best candidate, Pareto front and ranked runs (v1.10)."""
+    spec, paths = _load_campaign(campaign_dir)
+    with Store(paths["db"]) as store:
+        runs = store.list_runs(spec["project"], limit=int(limit))
+        details = []
+        for run in runs:
+            detail = store.get_run(run["run_id"])
+            if detail is None:
+                continue
+            metrics = {
+                name: {"value": row.get("value"), "passed": row.get("passed")}
+                for name, row in (detail.get("metrics") or {}).items()
+            }
+            details.append({
+                "run_id": detail["run_id"],
+                "status": detail["status"],
+                "metrics": metrics,
+                "feasible": is_feasible(metrics, spec),
+                "params": detail["params"],
+            })
+    objectives = default_objectives(spec)
+    ranked = rank(details, objectives)
+    return {
+        "campaign_dir": str(paths["root"]),
+        "objectives": objectives,
+        "best": read_best(paths["root"]),
+        "pareto_front": pareto_front(details, objectives),
+        "ranked": ranked,
+    }
+
+
 @mcp.tool()
 def resume_guarded_run(
     campaign_dir: str,
@@ -1655,6 +1763,20 @@ def resume_guarded_run(
 
     def _resume_in_background() -> None:
         store = Store(paths["db"])
+
+        def _on_completed(payload: dict[str, Any]) -> None:
+            commit_best(
+                paths["root"],
+                {
+                    "run_id": payload.get("run_id") or run_id,
+                    "spec_version": spec["version"],
+                    "metrics": payload.get("metrics") or {},
+                    "params": payload.get("params") or {},
+                    "feasible": bool(payload.get("feasible")),
+                },
+                spec,
+            )
+
         try:
             runner = CampaignRunner(
                 store=store,
@@ -1664,6 +1786,7 @@ def resume_guarded_run(
                 artifact_dir=artifact_dir,
                 cuts=list(cuts or ["theta_phi0", "phi_theta90"]),
                 frequency_ghz=frequency_ghz,
+                on_completed=_on_completed,
             )
             runner.resume(stage)
         except Exception as exc:  # noqa: BLE001
@@ -1714,6 +1837,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 
 

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Offline tests for crash recovery / resume (P4 item 1)."""
 from __future__ import annotations
 
@@ -201,6 +201,11 @@ class ResumeToolTests(unittest.TestCase):
                 return {"saved": True, "solution_data_complete": True}
             if command == "export_results":
                 path = Path(arguments["output_path"])
+                if arguments.get("export_type") == "convergence":
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("convergence", encoding="utf-8")
+                    return {"path": str(path), "evidence": {"assessment": "converged",
+                                                             "native_converged": True}}
                 _write_s1p(path)
                 return {"path": str(path)}
             if command == "export_farfield_report":
@@ -240,3 +245,4 @@ class ResumeToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
