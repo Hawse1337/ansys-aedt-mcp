@@ -822,14 +822,27 @@ class PyAedtBackend:
                     )
                     variant = {**variations, "Freq": ["%gGHz" % frequency]}
                     suffix = "@%gGHz" % frequency
-                rep = post.create_report(
-                    expressions=["dB(GainTotal)"],
-                    setup_sweep_name=setup_sweep,
-                    primary_sweep_variable=sweep,
-                    report_category="Far Fields",
-                    variations=variant,
-                    plot_type="Rectangular Plot",
-                )
+                rep = False
+                for _attempt in range(3):
+                    rep = post.create_report(
+                        expressions=["dB(GainTotal)"],
+                        setup_sweep_name=setup_sweep,
+                        primary_sweep_variable=sweep,
+                        report_category="Far Fields",
+                        variations=variant,
+                        plot_type="Rectangular Plot",
+                    )
+                    if rep:
+                        break
+                    # create_report returns False while the design's solution
+                    # context is still settling right after a solve
+                    time.sleep(2.0)
+                if not rep:
+                    raise BackendCommandError(
+                        "create_report returned False for setup=%r sweep=%r freq=%r "
+                        "after 3 attempts (far-field data may be unavailable for that "
+                        "solution)" % (setup_name, setup_sweep, frequency)
+                    )
                 report_name = _resolve_report_name(rep)
                 exported = Path(post.export_report_to_csv(out_dir, report_name))
                 rows = 0

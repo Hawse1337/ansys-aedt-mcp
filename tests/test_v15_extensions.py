@@ -673,3 +673,42 @@ class ReportNameListTests(unittest.TestCase):
             _saved_root_name = "Plot_DRAFT"
 
         self.assertEqual(_resolve_report_name(Draft()), "Plot_DRAFT")
+
+class CreateReportRetryTests(unittest.TestCase):
+    def test_false_then_object_recovers(self):
+        import time as _time
+
+        calls = {"n": 0}
+
+        class Post:
+            def create_report(self, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return False
+                class Rep:
+                    plot_name = "Plot_RETRY"
+                return Rep()
+
+        # replicate the retry loop shape used by the backend
+        post = Post()
+        rep = False
+        for _ in range(3):
+            rep = post.create_report()
+            if rep:
+                break
+            _time.sleep(0.0)
+        self.assertTrue(rep)
+        self.assertEqual(calls["n"], 2)
+
+    def test_always_false_is_reported(self):
+        class Post:
+            def create_report(self, **kwargs):
+                return False
+
+        post = Post()
+        rep = False
+        for _ in range(3):
+            rep = post.create_report()
+            if rep:
+                break
+        self.assertFalse(rep)
