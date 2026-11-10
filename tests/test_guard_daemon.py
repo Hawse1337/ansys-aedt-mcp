@@ -412,3 +412,30 @@ class SingletonLongRunTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertFalse(paths.acquire_singleton())
+
+class FarfieldSweepScopeTests(unittest.TestCase):
+    def _adapter(self, **extra):
+        from aedt_guard.worker_adapter import GuardedAdapter
+
+        calls = []
+
+        class FakeClient:
+            def execute(self, target, command, arguments, timeout=None):
+                calls.append((command, dict(arguments)))
+                return {"cuts": {}}
+
+        adapter = GuardedAdapter(pid=1, port=None, project_name="p", design_name="D",
+                                 setup_name="B0_Swp", cuts=[], worker_timeout=5.0,
+                                 sweep_name="Swp_fast", client=FakeClient(), **extra)
+        return adapter, calls
+
+    def test_separate_farfield_setup_does_not_inherit_the_s11_sweep(self):
+        adapter, calls = self._adapter(farfield_setup="FF_Swp")
+        adapter.export_farfield(Path("out"), ["theta_phi0"], frequencies=[28.0])
+        self.assertNotIn("sweep_name", calls[0][1])
+        self.assertEqual(calls[0][1]["setup_name"], "FF_Swp")
+
+    def test_same_setup_keeps_the_sweep(self):
+        adapter, calls = self._adapter()
+        adapter.export_farfield(Path("out"), ["theta_phi0"], frequencies=[28.0])
+        self.assertEqual(calls[0][1]["sweep_name"], "Swp_fast")

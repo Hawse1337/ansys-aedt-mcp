@@ -1,4 +1,4 @@
-﻿"""Worker-backed adapter used by guarded runs (MCP tools and the daemon).
+"""Worker-backed adapter used by guarded runs (MCP tools and the daemon).
 
 All AEDT access goes through the existing PyAEDT broker (``worker_client``), so
 the adapter inherits the same attach hardening and run-token enforcement.
@@ -156,7 +156,10 @@ class GuardedAdapter:
             "output_dir": str(output_dir),
             "cuts": cuts,
         }
-        if self.sweep_name:
+        # The touchstone sweep belongs to the S11 setup. When far fields come
+        # from a different setup (e.g. FF_Swp) that sweep does not exist there
+        # and create_report fails, so only inherit it for the same setup.
+        if self.sweep_name and not self.farfield_setup:
             arguments["sweep_name"] = self.sweep_name
         if frequencies:
             arguments["frequencies_ghz"] = list(frequencies)
