@@ -1,4 +1,4 @@
-﻿"""Design-specification management for the guarded antenna workflow.
+"""Design-specification management for the guarded antenna workflow.
 
 The spec is the single authoritative source of design goals. It lives in a
 JSON file, is versioned, and can only be changed through ``update_spec`` which
@@ -31,7 +31,8 @@ METRIC_KINDS = {
     "ripple",
     "sll",
     "beam_theta",
-    "effective_bandwidth",   # GHz: contiguous span where every enabled constraint holds
+    "effective_bandwidth",
+    "s11_bandwidth",   # GHz: contiguous span where every enabled constraint holds
 }
 
 OPERATORS = {"<=", ">=", "=="}

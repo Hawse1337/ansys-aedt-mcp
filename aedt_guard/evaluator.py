@@ -246,6 +246,56 @@ def effective_bandwidth(per_frequency_pass: list[tuple[float, bool]]) -> dict[st
     }
 
 
+def s11_bandwidth(freqs_ghz, s11_db, target_db: float, band: tuple[float, float]) -> dict[str, Any]:
+    """Largest contiguous span inside ``band`` where S11 stays below the target.
+
+    Computed from the exported touchstone alone, so it does not require far
+    fields at every frequency. Unswept gaps never count: only measured points
+    can extend a passing run.
+    """
+    import numpy as np
+
+    freqs = np.asarray(freqs_ghz, dtype=float)
+    values = np.asarray(s11_db, dtype=float)
+    low, high = float(band[0]), float(band[1])
+    mask_band = (freqs >= low - 1e-9) & (freqs <= high + 1e-9)
+    freqs = freqs[mask_band]
+    values = values[mask_band]
+    order = np.argsort(freqs)
+    freqs = freqs[order]
+    values = values[order]
+    best_span = 0.0
+    best_range: list[float] | None = None
+    run_start: float | None = None
+    previous: float | None = None
+    points: list[tuple[float, bool]] = []
+    for freq, value in zip(freqs, values):
+        ok = bool(float(value) <= float(target_db) + 1e-9)
+        points.append((float(freq), ok))
+        if ok:
+            if run_start is None:
+                run_start = float(freq)
+            previous = float(freq)
+        else:
+            if run_start is not None and previous is not None:
+                span = previous - run_start
+                if span > best_span:
+                    best_span, best_range = span, [run_start, previous]
+            run_start = previous = None
+    if run_start is not None and previous is not None:
+        span = previous - run_start
+        if span > best_span:
+            best_span, best_range = span, [run_start, previous]
+    return {
+        "value": float(best_span),
+        "target_db": float(target_db),
+        "low_ghz": best_range[0] if best_range else None,
+        "high_ghz": best_range[1] if best_range else None,
+        "samples": len(points),
+        "per_frequency": {f"{freq:g}": ok for freq, ok in points},
+    }
+
+
 def _constraint_value(kind: str, metrics: dict[str, Any], freq_key: str) -> float | None:
     """Per-frequency value of one metric kind, for the effective-bandwidth pass test."""
     if kind == "s11":
@@ -334,6 +384,20 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
                     break
             per_freq_pass.append((freq, ok))
         result["metrics"]["effective_bandwidth"] = effective_bandwidth(per_freq_pass)
+
+    # --- S11-only bandwidth (no far fields needed at every frequency) ---
+    s11_bw_metric = next(
+        (m for m in spec.get("metrics", []) if m.get("kind") == "s11_bandwidth"), None
+    )
+    if s11_bw_metric is not None:
+        s11_limit = next(
+            (float(m["target"]) for m in spec.get("metrics", [])
+             if m.get("kind") == "s11" and "target" in m),
+            float(s11_bw_metric.get("threshold_db", -10.0)),
+        )
+        result["metrics"]["s11_bandwidth"] = s11_bandwidth(
+            freqs, s11_db, s11_limit, band
+        )
 
     gains = [v["realized_gain_h"] for v in per_frequency.values()]
     thetas = [v["peak_theta"] for v in per_frequency.values()]
