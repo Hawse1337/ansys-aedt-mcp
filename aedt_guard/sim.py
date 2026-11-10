@@ -340,6 +340,18 @@ class CampaignRunner:
                 on_retry=getattr(self.adapter, "reset_connection", None),
             )
             artifacts["s11"] = str(touch.get("path") or self.artifact_dir / "result.s1p")
+            # A swept run must export a curve. A single-row touchstone used to
+            # slip through and made every bandwidth metric silently read 0 GHz,
+            # which looks like a design result instead of an export failure.
+            details = touch.get("details") or {}
+            rows = details.get("row_count")
+            sweep_name = getattr(self.adapter, "sweep_name", None)
+            if sweep_name and isinstance(rows, int) and rows < 3:
+                raise GuardError(
+                    "E_SWEEP_EXPORT_INCOMPLETE: touchstone for sweep %r has %d row(s) "
+                    "after %s attempt(s); refusing to report a bandwidth"
+                    % (sweep_name, rows, details.get("attempts"))
+                )
             by_frequency: dict[str, dict[str, str]] = {}
             singles: dict[str, str] = {}
             for name, info in (far.get("cuts") or {}).items():

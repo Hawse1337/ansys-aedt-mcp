@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import contextlib
@@ -8,6 +8,7 @@ import math
 import os
 import re
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from io import StringIO
@@ -16,6 +17,23 @@ from typing import Any
 
 from aedt_target import AedtTarget
 from solve_evidence import summarize_hfss_convergence, summarize_hfss_profile
+
+
+
+def _count_touchstone_rows(path: Path) -> int:
+    """Number of data rows in a touchstone file (header/comment lines skipped)."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    rows = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("!") or stripped.startswith("#"):
+            continue
+        if len(stripped.split()) >= 3:
+            rows += 1
+    return rows
 
 
 class CapabilityError(ValueError):
@@ -1014,8 +1032,45 @@ class OfficialCapabilities:
                 kwargs["setup"] = setup_name
             if sweep_name and export_type == "touchstone":
                 kwargs["sweep"] = sweep_name
-            result = method(**kwargs)
+            # ExportNetworkData fails intermittently right after a solve (gRPC
+            # backend_error) and a swept export occasionally writes only the
+            # adaptive point. Retry before declaring a solved run failed, and
+            # report the row count so the caller can fail closed instead of
+            # silently computing a zero bandwidth from a single row.
+            attempts = 1
+            result = None
+            last_error: Exception | None = None
+            for attempt in range(3):
+                attempts = attempt + 1
+                try:
+                    result = method(**kwargs)
+                    last_error = None
+                except Exception as exc:  # noqa: BLE001 - vendor errors vary
+                    last_error = exc
+                    result = None
+                if last_error is not None:
+                    time.sleep(2.0)
+                    continue
+                if export_type != "touchstone" or not output_path.is_file():
+                    break
+                rows = _count_touchstone_rows(output_path)
+                if not sweep_name or rows >= 3:
+                    break
+                time.sleep(2.0)
+            if last_error is not None and result is None:
+                raise CapabilityError(
+                    "export_touchstone failed after %d attempts: %s: %s"
+                    % (attempts, type(last_error).__name__, str(last_error)[:200])
+                )
             export_method = methods[export_type]
+            if export_type == "touchstone":
+                details = {
+                    "row_count": _count_touchstone_rows(output_path) if output_path.is_file()
+                    else 0,
+                    "expected_rows": None,
+                    "attempts": attempts,
+                    "sweep_name": sweep_name,
+                }
         evidence = None
         if str(getattr(app, "design_type", "")).strip().casefold() == "hfss" and output_path.is_file():
             if export_type in {"profile", "convergence"}:
