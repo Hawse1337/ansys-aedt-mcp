@@ -80,7 +80,9 @@ def _resolve_report_name(report: Any) -> str:
         if isinstance(value, str) and value.strip():
             return value
     raise BackendCommandError(
-        "could not resolve the report name (tried name/plot_name/internal_plot_name)"
+        "could not resolve the report name (tried name/plot_name/"
+        "internal_plot_name/_saved_root_name); got "
+        f"{type(report).__name__}: {repr(report)[:160]}"
     )
 
 

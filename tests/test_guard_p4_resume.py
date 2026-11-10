@@ -121,7 +121,7 @@ class ResumeRunnerTests(unittest.TestCase):
         store, runner = self._store_and_runner(adapter)
         status = runner.resume("SOLVED")
         self.assertEqual(status, "COMPLETED")
-        self.assertEqual(adapter.calls, ["finalize", "touchstone", "farfield"])
+        self.assertEqual(adapter.calls, ["finalize", "farfield", "touchstone"])
         detail = store.get_run("r1")
         self.assertEqual(detail["status"], "COMPLETED")
         self.assertIn("s11", detail["metrics"])
@@ -246,5 +246,6 @@ class ResumeToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

@@ -1,4 +1,4 @@
-﻿"""Guarded simulation state machine and orchestration.
+"""Guarded simulation state machine and orchestration.
 
 The runner owns the run lifecycle and is the only place that may advance a run
 to ``COMPLETED``. Metrics become visible only after ``VALIDATING`` finished, so
@@ -326,16 +326,20 @@ class CampaignRunner:
         if self.frequency_ghz is not None:
             artifacts["frequency_ghz"] = float(self.frequency_ghz)
         try:
-            touch = _export_with_retry(
-                self.adapter.export_touchstone, self.artifact_dir / "result.s1p",
-                on_retry=getattr(self.adapter, "reset_connection", None),
-            )
-            artifacts["s11"] = str(touch.get("path") or self.artifact_dir / "result.s1p")
+            # Far fields first: exporting the touchstone changes the design's
+            # active solution context, and a far-field report created right
+            # after it can come back as an unresolved draft (observed as
+            # 'could not resolve the report name').
             far = _export_with_retry(
                 self.adapter.export_farfield,
                 self.artifact_dir / "farfield", self.cuts, frequencies=self.frequencies,
                 on_retry=getattr(self.adapter, "reset_connection", None),
             )
+            touch = _export_with_retry(
+                self.adapter.export_touchstone, self.artifact_dir / "result.s1p",
+                on_retry=getattr(self.adapter, "reset_connection", None),
+            )
+            artifacts["s11"] = str(touch.get("path") or self.artifact_dir / "result.s1p")
             by_frequency: dict[str, dict[str, str]] = {}
             singles: dict[str, str] = {}
             for name, info in (far.get("cuts") or {}).items():
