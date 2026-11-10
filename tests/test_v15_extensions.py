@@ -650,3 +650,26 @@ class ReportNameResolutionTests(unittest.TestCase):
 
 
 
+
+class ReportNameListTests(unittest.TestCase):
+    def test_list_of_reports_is_resolved(self):
+        from pyaedt_backend import _resolve_report_name
+
+        class Report:
+            plot_name = "Plot_LIST"
+
+        self.assertEqual(_resolve_report_name([Report()]), "Plot_LIST")
+
+    def test_empty_list_raises(self):
+        from pyaedt_backend import BackendCommandError, _resolve_report_name
+
+        with self.assertRaises(BackendCommandError):
+            _resolve_report_name([])
+
+    def test_saved_root_name_is_a_fallback(self):
+        from pyaedt_backend import _resolve_report_name
+
+        class Draft:
+            _saved_root_name = "Plot_DRAFT"
+
+        self.assertEqual(_resolve_report_name(Draft()), "Plot_DRAFT")

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import threading
@@ -63,8 +63,20 @@ def _resolve_report_name(report: Any) -> str:
     if isinstance(report, str) and report.strip():
         # some PyAEDT versions return the report name directly
         return report.strip()
-    for attribute in ("name", "plot_name", "internal_plot_name"):
-        value = getattr(report, attribute, None)
+    if isinstance(report, (list, tuple)):
+        for item in report:
+            try:
+                return _resolve_report_name(item)
+            except BackendCommandError:
+                continue
+        raise BackendCommandError(
+            "report list contained no resolvable report name"
+        )
+    for attribute in ("name", "plot_name", "internal_plot_name", "_saved_root_name"):
+        try:
+            value = getattr(report, attribute, None)
+        except Exception:  # noqa: BLE001 - vendor properties can raise
+            continue
         if isinstance(value, str) and value.strip():
             return value
     raise BackendCommandError(
