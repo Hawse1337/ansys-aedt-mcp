@@ -346,6 +346,13 @@ class CampaignRunner:
             details = touch.get("details") or {}
             rows = details.get("row_count")
             sweep_name = getattr(self.adapter, "sweep_name", None)
+            expected = details.get("expected_rows")
+            if (sweep_name and isinstance(rows, int) and isinstance(expected, int)
+                    and 0 < expected and rows < expected):
+                raise GuardError(
+                    "E_SWEEP_EXPORT_INCOMPLETE: touchstone for sweep %r has %d of %d "
+                    "requested rows" % (sweep_name, rows, expected)
+                )
             if sweep_name and isinstance(rows, int) and rows < 3:
                 raise GuardError(
                     "E_SWEEP_EXPORT_INCOMPLETE: touchstone for sweep %r has %d row(s) "

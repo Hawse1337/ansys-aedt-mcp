@@ -1064,10 +1064,21 @@ class OfficialCapabilities:
                 )
             export_method = methods[export_type]
             if export_type == "touchstone":
+                expected_rows = None
+                if sweep_name:
+                    try:
+                        get_setup = getattr(app, "get_setup", None)
+                        setup_obj = get_setup(setup_name) if (callable(get_setup) and setup_name) else None
+                        get_sweep = getattr(setup_obj, "get_sweep", None)
+                        sweep_obj = get_sweep(sweep_name) if callable(get_sweep) else None
+                        freqs = list(getattr(sweep_obj, "frequency", []) or [])
+                        expected_rows = len(freqs) or None
+                    except Exception:  # noqa: BLE001 - vendor objects vary
+                        expected_rows = None
                 details = {
                     "row_count": _count_touchstone_rows(output_path) if output_path.is_file()
                     else 0,
-                    "expected_rows": None,
+                    "expected_rows": expected_rows,
                     "attempts": attempts,
                     "sweep_name": sweep_name,
                 }
