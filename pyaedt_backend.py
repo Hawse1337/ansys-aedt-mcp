@@ -824,11 +824,12 @@ class PyAedtBackend:
                     suffix = "@%gGHz" % frequency
                 rep = False
                 for _attempt in range(3):
-                    # two expressions in one report: the gain pattern the guard already
-                    # scores, plus the directivity so radiation efficiency can be derived
-                    # without a second (slow) far-field export
+                    # the directivity expression made real solves hang in the sweep phase
+                    # (eight hf3d workers idle for thirty minutes), so the default report is
+                    # back to the gain only; the evaluator still reads a directivity column
+                    # when a project exports one
                     rep = post.create_report(
-                        expressions=["dB(GainTotal)", "dB(DirectivityTotal)"],
+                        expressions=["dB(GainTotal)"],
                         setup_sweep_name=setup_sweep,
                         primary_sweep_variable=sweep,
                         report_category="Far Fields",
