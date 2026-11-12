@@ -33,6 +33,8 @@ METRIC_KINDS = {
     "beam_theta",
     "effective_bandwidth",
     "s11_bandwidth",   # GHz: contiguous span where every enabled constraint holds
+    "directivity_db",  # dBi: peak directivity from the far-field cut
+    "radiation_efficiency",  # 0..1: ratio of radiated to accepted power
 }
 
 OPERATORS = {"<=", ">=", "=="}

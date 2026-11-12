@@ -246,6 +246,21 @@ def effective_bandwidth(per_frequency_pass: list[tuple[float, bool]]) -> dict[st
     }
 
 
+def radiation_efficiency(gain_db: float, directivity_db: float) -> float | None:
+    """eta = 10 ** ((gain - directivity) / 10), clamped to [0, 1].
+
+    The gain must be the radiated (mismatch-free) gain, which is what the far-field report
+    gives; a realized gain would fold the mismatch loss into the result.
+    """
+    if gain_db is None or directivity_db is None:
+        return None
+    try:
+        value = 10.0 ** ((float(gain_db) - float(directivity_db)) / 10.0)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, value))
+
+
 def s11_bandwidth(freqs_ghz, s11_db, target_db: float, band: tuple[float, float]) -> dict[str, Any]:
     """Largest contiguous span inside ``band`` where S11 stays below the target.
 
@@ -345,13 +360,25 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
             if paths.get("phi"):
                 phi_x, phi_y = read_curve_csv(paths["phi"], x_candidates=("Phi [deg]", "Theta [deg]"))
                 ripple_value = ripple(phi_x, phi_y)
-            per_frequency[f"{gain_freq:g}"] = {
+            detail = {
                 "peak_gain": peak,
                 "peak_theta": peak_theta,
                 "realized_gain_h": realized,
                 "ripple": ripple_value,
                 "sll": sidelobe_level(theta, gain, exclusion),
             }
+            # the directivity column is optional: older exports and test fixtures only carry
+            # the gain, and a missing column must not invalidate an otherwise good run
+            try:
+                _, directivity = read_curve_csv(
+                    paths["theta"], y_candidates=("dB(DirectivityTotal) []",))
+                peak_directivity, _ = peak_and_beam(theta, directivity)
+                detail["directivity_db"] = peak_directivity
+                detail["radiation_efficiency"] = radiation_efficiency(
+                    peak, peak_directivity)
+            except (ArtifactError, KeyError, ValueError):
+                pass
+            per_frequency[f"{gain_freq:g}"] = detail
     except ArtifactError as exc:
         result["invalid"] = str(exc)
         result["feasible"] = False
@@ -422,6 +449,25 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
         result["metrics"]["ripple"] = {
             "value": float(max(ripples)),
             "per_frequency": {k: v["ripple"] for k, v in per_frequency.items() if v["ripple"] is not None},
+        }
+    directivities = [v["directivity_db"] for v in per_frequency.values()
+                     if v.get("directivity_db") is not None]
+    efficiencies = [v["radiation_efficiency"] for v in per_frequency.values()
+                    if v.get("radiation_efficiency") is not None]
+    if directivities:
+        result["metrics"]["directivity_db"] = {
+            "value": float(max(directivities)),
+            "per_frequency": {k: v["directivity_db"] for k, v in per_frequency.items()
+                               if v.get("directivity_db") is not None},
+        }
+    if efficiencies:
+        # worst case across frequencies: an efficiency that collapses at one frequency is a
+        # real loss of radiated power, not a detail to average away
+        result["metrics"]["radiation_efficiency"] = {
+            "value": float(min(efficiencies)),
+            "per_frequency": {k: v["radiation_efficiency"] for k, v in
+                               per_frequency.items()
+                               if v.get("radiation_efficiency") is not None},
         }
     if slls:
         result["metrics"]["sll"] = {
