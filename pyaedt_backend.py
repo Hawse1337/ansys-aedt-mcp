@@ -858,7 +858,7 @@ class PyAedtBackend:
                             rows = sum(1 for _ in handle)
                     except Exception:
                         rows = 0
-                results["%s%s" % (cut, suffix)] = {
+                entry = {
                     "report_name": report_name,
                     "path": str(exported),
                     "exists": exported.is_file(),
@@ -866,6 +866,30 @@ class PyAedtBackend:
                     "non_empty": rows > 1,
                     "frequency_ghz": frequency,
                 }
+                if "dB(DirectivityTotal)" in expressions:
+                    # export_report_to_csv writes only the primary trace, so the directivity
+                    # needs its own report and its own file next to the gain one
+                    direct = False
+                    for _attempt in range(3):
+                        direct = post.create_report(
+                            expressions=["dB(DirectivityTotal)"],
+                            setup_sweep_name=setup_sweep,
+                            primary_sweep_variable=sweep,
+                            report_category="Far Fields",
+                            variations=variant,
+                            plot_type="Rectangular Plot",
+                        )
+                        if direct:
+                            break
+                        time.sleep(2.0)
+                    if direct:
+                        direct_name = _resolve_report_name(direct)
+                        direct_path = Path(post.export_report_to_csv(out_dir, direct_name))
+                        entry["directivity_path"] = str(direct_path)
+                        entry["directivity_rows"] = sum(
+                            1 for _ in direct_path.open(encoding="utf-8")) \
+                            if direct_path.is_file() else 0
+                results["%s%s" % (cut, suffix)] = entry
                 at_frequency.append(rows > 1)
             if frequency is not None and not any(at_frequency):
                 unavailable.append(float(frequency))

@@ -369,9 +369,10 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
             }
             # the directivity column is optional: older exports and test fixtures only carry
             # the gain, and a missing column must not invalidate an otherwise good run
+            directivity_source = paths.get("theta_directivity") or paths["theta"]
             try:
                 _, directivity = read_curve_csv(
-                    paths["theta"], y_candidates=("dB(DirectivityTotal) []",))
+                    directivity_source, y_candidates=("dB(DirectivityTotal) []",))
                 peak_directivity, _ = peak_and_beam(theta, directivity)
                 detail["directivity_db"] = peak_directivity
                 detail["radiation_efficiency"] = radiation_efficiency(

@@ -378,6 +378,10 @@ class CampaignRunner:
                     slot = by_frequency.setdefault(key, {})
                     if base.startswith("theta"):
                         slot["theta"] = path
+                        # the directivity is exported as its own report file, so hand it to
+                        # the evaluator alongside the gain cut it belongs to
+                        if info.get("directivity_path"):
+                            slot["theta_directivity"] = info["directivity_path"]
                     elif base.startswith("phi"):
                         slot["phi"] = path
                 else:
