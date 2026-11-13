@@ -348,10 +348,33 @@ class CampaignRunner:
                 **farfield_extra,
                 on_retry=getattr(self.adapter, "reset_connection", None),
             )
-            touch = _export_with_retry(
-                self.adapter.export_touchstone, self.artifact_dir / "result.s1p",
-                on_retry=getattr(self.adapter, "reset_connection", None),
-            )
+            # the discrete sweep can still be solving when the export arrives, and a short
+            # touchstone then looks like a one-point band. Retry with a wait before treating it
+            # as an export failure: several real runs failed only because the file was early.
+            touch = None
+            short_attempts = 0
+            policy = self.spec.get("execution_policy") or {}
+            retries = max(1, int(policy.get("touchstone_retries", 1) or 1))
+            retry_delay = float(policy.get("touchstone_retry_delay_s", 15.0) or 15.0)
+            for attempt in range(retries):
+                touch = _export_with_retry(
+                    self.adapter.export_touchstone, self.artifact_dir / "result.s1p",
+                    on_retry=getattr(self.adapter, "reset_connection", None),
+                )
+                attempt_details = (touch or {}).get("details") or {}
+                attempt_rows = attempt_details.get("row_count")
+                attempt_expected = attempt_details.get("expected_rows")
+                enough = (isinstance(attempt_rows, int)
+                          and (attempt_rows >= 3)
+                          and not (isinstance(attempt_expected, int) and 0 < attempt_expected
+                                   and attempt_rows < attempt_expected))
+                if enough:
+                    if attempt:
+                        touch.setdefault("details", {})["incomplete_attempts"] = short_attempts
+                    break
+                short_attempts += 1
+                if attempt + 1 < retries:
+                    self.sleep(retry_delay)
             artifacts["s11"] = str(touch.get("path") or self.artifact_dir / "result.s1p")
             # A swept run must export a curve. A single-row touchstone used to
             # slip through and made every bandwidth metric silently read 0 GHz,

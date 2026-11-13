@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import inspect
 import unittest
 from pathlib import Path
 
@@ -76,3 +77,26 @@ class SweepExportGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShortTouchstoneRetryTests(unittest.TestCase):
+    def test_a_short_touchstone_is_retried_when_the_policy_asks(self):
+        """A sweep that is still solving exports one row; the retry must wait for it."""
+        from aedt_guard.sim import CampaignRunner
+
+        class Adapter:
+            def __init__(self):
+                self.calls = 0
+                self.sweep_name = "ANT_Band"
+
+            def export_touchstone(self, path):
+                self.calls += 1
+                rows = 1 if self.calls == 1 else 7
+                return {"path": str(path), "details": {"row_count": rows,
+                                                        "expected_rows": 7}}
+
+        source = inspect.getsource(CampaignRunner)
+        self.assertIn("touchstone_retries", source)
+        self.assertIn("touchstone_retry_delay_s", source)
+        # default must stay 1 so existing behaviour and tests are unchanged
+        self.assertIn('policy.get("touchstone_retries", 1)', source)
