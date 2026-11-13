@@ -369,6 +369,19 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
             }
             # the directivity column is optional: older exports and test fixtures only carry
             # the gain, and a missing column must not invalidate an otherwise good run
+            grid_path = paths.get("sphere_grid")
+            if grid_path:
+                # the design reports only gain, so the directivity comes from integrating the
+                # whole sphere rather than from a DirectivityTotal column
+                try:
+                    from .pattern import directivity_from_grid, read_sphere_grid
+
+                    thetas, _phis, values = read_sphere_grid(grid_path)
+                    detail["directivity_db"] = directivity_from_grid(thetas, values)
+                    detail["radiation_efficiency"] = radiation_efficiency(
+                        peak, detail["directivity_db"])
+                except Exception:  # noqa: BLE001 - the metric stays absent rather than wrong
+                    pass
             directivity_source = paths.get("theta_directivity") or paths["theta"]
             try:
                 _, directivity = read_curve_csv(

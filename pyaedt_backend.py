@@ -788,6 +788,9 @@ class PyAedtBackend:
             "theta_phi0": ({"Phi": ["0deg"]}, "Theta"),
             "theta_phi90": ({"Phi": ["90deg"]}, "Theta"),
             "phi_theta90": ({"Phi": ["All"], "Theta": ["90deg"]}, "Phi"),
+            # a full theta/phi grid: every phi is a family member, so the export holds one
+            # column per phi and the directivity integral has the whole sphere to work with
+            "sphere_grid": ({"Phi": ["All"]}, "Theta"),
         }
         cuts = arguments.get("cuts") or ["theta_phi0", "phi_theta90"]
         if isinstance(cuts, str):

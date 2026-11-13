@@ -334,8 +334,13 @@ class CampaignRunner:
             # opt-in: only pass the flag when the task asked for it, so adapters that do not
             # support the argument (all the fakes in the tests) keep working unchanged
             farfield_extra = {}
-            if bool((self.spec.get("evaluation") or {}).get("include_directivity", False)):
+            want_directivity = bool(
+                (self.spec.get("evaluation") or {}).get("include_directivity", False))
+            if want_directivity:
+                # the design has no DirectivityTotal quantity, so the whole sphere is exported
+                # and integrated instead; the gain cuts stay for the usual metrics
                 farfield_extra["include_directivity"] = True
+                farfield_extra["cuts"] = list(self.cuts) + ["sphere_grid"]
             far = _export_with_retry(
                 self.adapter.export_farfield,
                 self.artifact_dir / "farfield", self.cuts, frequencies=self.frequencies,
@@ -376,7 +381,9 @@ class CampaignRunner:
                 if label:
                     key = label.replace("GHz", "").strip()
                     slot = by_frequency.setdefault(key, {})
-                    if base.startswith("theta"):
+                    if base.startswith("sphere_grid"):
+                        slot["sphere_grid"] = path
+                    elif base.startswith("theta"):
                         slot["theta"] = path
                         # the directivity is exported as its own report file, so hand it to
                         # the evaluator alongside the gain cut it belongs to
