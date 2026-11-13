@@ -824,12 +824,14 @@ class PyAedtBackend:
                     suffix = "@%gGHz" % frequency
                 rep = False
                 for _attempt in range(3):
-                    # the directivity expression made real solves hang in the sweep phase
-                    # (eight hf3d workers idle for thirty minutes), so the default report is
-                    # back to the gain only; the evaluator still reads a directivity column
-                    # when a project exports one
+                    # gain only by default: the directivity expression made real solves stall
+                    # in the sweep phase (eight idle hf3d workers for thirty minutes), so it is
+                    # opt-in per task rather than always on
+                    expressions = ["dB(GainTotal)"]
+                    if arguments.get("include_directivity") is True:
+                        expressions.append("dB(DirectivityTotal)")
                     rep = post.create_report(
-                        expressions=["dB(GainTotal)"],
+                        expressions=expressions,
                         setup_sweep_name=setup_sweep,
                         primary_sweep_variable=sweep,
                         report_category="Far Fields",

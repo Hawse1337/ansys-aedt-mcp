@@ -146,7 +146,8 @@ class GuardedAdapter:
         )
 
     def export_farfield(self, output_dir: Path, cuts: list[str],
-                        frequencies: list[float] | None = None) -> dict[str, Any]:
+                        frequencies: list[float] | None = None,
+                        include_directivity: bool = False) -> dict[str, Any]:
         arguments = {
             "project_name": self.project_name,
             "design_name": self.design_name,
@@ -163,6 +164,8 @@ class GuardedAdapter:
             arguments["sweep_name"] = self.sweep_name
         if frequencies:
             arguments["frequencies_ghz"] = list(frequencies)
+        if include_directivity:
+            arguments["include_directivity"] = True
         return self._call("export_farfield_report", arguments)
 
     def analyze_setup(self, setup_name: str) -> dict[str, Any]:

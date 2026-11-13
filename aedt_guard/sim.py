@@ -49,7 +49,8 @@ class Adapter(Protocol):
     def export_touchstone(self, path: Path) -> dict[str, Any]: ...
 
     def export_farfield(self, output_dir: Path, cuts: list[str],
-                        frequencies: list[float] | None = None) -> dict[str, Any]: ...
+                        frequencies: list[float] | None = None,
+                        include_directivity: bool = False) -> dict[str, Any]: ...
 
     def export_convergence(self, path: Path) -> dict[str, Any]: ...
 
@@ -330,9 +331,15 @@ class CampaignRunner:
             # active solution context, and a far-field report created right
             # after it can come back as an unresolved draft (observed as
             # 'could not resolve the report name').
+            # opt-in: only pass the flag when the task asked for it, so adapters that do not
+            # support the argument (all the fakes in the tests) keep working unchanged
+            farfield_extra = {}
+            if bool((self.spec.get("evaluation") or {}).get("include_directivity", False)):
+                farfield_extra["include_directivity"] = True
             far = _export_with_retry(
                 self.adapter.export_farfield,
                 self.artifact_dir / "farfield", self.cuts, frequencies=self.frequencies,
+                **farfield_extra,
                 on_retry=getattr(self.adapter, "reset_connection", None),
             )
             touch = _export_with_retry(
