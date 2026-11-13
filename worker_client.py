@@ -81,7 +81,11 @@ class WorkerClient:
         default_timeout: float | None = None,
     ) -> None:
         self.worker_script = Path(worker_script or Path(__file__).with_name("pyaedt_worker.py"))
-        self.python_executable = Path(python_executable or sys.executable)
+        # a frozen application (PyInstaller) has sys.executable pointing at the application, not
+        # at a python interpreter, so the worker cannot be started with it; AEDT_MCP_PYTHON names
+        # the interpreter that actually has PyAEDT installed
+        self.python_executable = Path(
+            python_executable or os.environ.get("AEDT_MCP_PYTHON") or sys.executable)
         configured_log_dir = log_dir or os.environ.get("AEDT_LOG_DIR")
         self.log_dir = Path(configured_log_dir or Path(tempfile.gettempdir()) / "aedt-mcp")
         self.default_timeout = float(
