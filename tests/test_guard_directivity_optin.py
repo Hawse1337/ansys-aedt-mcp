@@ -43,3 +43,17 @@ class FarfieldFlagTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SphereGridRequestTests(unittest.TestCase):
+    def test_grid_cut_is_added_once_when_directivity_is_requested(self):
+        import inspect
+
+        from aedt_guard import sim
+
+        source = inspect.getsource(sim)
+        self.assertIn('export_cuts = export_cuts + ["sphere_grid"]', source)
+        # the cuts must be passed once: passing them positionally and as a keyword raised
+        # "got multiple values for argument 'cuts'" on the first real run
+        self.assertIn('self.artifact_dir / "farfield", export_cuts', source)
+        self.assertNotIn('farfield_extra["cuts"]', source)

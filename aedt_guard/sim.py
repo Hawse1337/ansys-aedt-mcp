@@ -334,16 +334,17 @@ class CampaignRunner:
             # opt-in: only pass the flag when the task asked for it, so adapters that do not
             # support the argument (all the fakes in the tests) keep working unchanged
             farfield_extra = {}
+            export_cuts = list(self.cuts)
             want_directivity = bool(
                 (self.spec.get("evaluation") or {}).get("include_directivity", False))
             if want_directivity:
                 # the design has no DirectivityTotal quantity, so the whole sphere is exported
                 # and integrated instead; the gain cuts stay for the usual metrics
                 farfield_extra["include_directivity"] = True
-                farfield_extra["cuts"] = list(self.cuts) + ["sphere_grid"]
+                export_cuts = export_cuts + ["sphere_grid"]
             far = _export_with_retry(
                 self.adapter.export_farfield,
-                self.artifact_dir / "farfield", self.cuts, frequencies=self.frequencies,
+                self.artifact_dir / "farfield", export_cuts, frequencies=self.frequencies,
                 **farfield_extra,
                 on_retry=getattr(self.adapter, "reset_connection", None),
             )
