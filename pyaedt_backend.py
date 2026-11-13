@@ -870,18 +870,28 @@ class PyAedtBackend:
                     # export_report_to_csv writes only the primary trace, so the directivity
                     # needs its own report and its own file next to the gain one
                     direct = False
-                    for _attempt in range(3):
-                        direct = post.create_report(
-                            expressions=["dB(DirectivityTotal)"],
-                            setup_sweep_name=setup_sweep,
-                            primary_sweep_variable=sweep,
-                            report_category="Far Fields",
-                            variations=variant,
-                            plot_type="Rectangular Plot",
-                        )
-                        if direct:
-                            break
-                        time.sleep(2.0)
+                    direct_error = None
+                    try:
+                        for _attempt in range(3):
+                            direct = post.create_report(
+                                expressions=["dB(DirectivityTotal)"],
+                                setup_sweep_name=setup_sweep,
+                                primary_sweep_variable=sweep,
+                                report_category="Far Fields",
+                                variations=variant,
+                                plot_type="Rectangular Plot",
+                            )
+                            if direct:
+                                break
+                            time.sleep(2.0)
+                    except Exception as exc:  # noqa: BLE001 - the metric is optional
+                        # AEDT rejects dB(DirectivityTotal) for some designs, and the failed
+                        # command poisons the worker session, so record it and move on instead
+                        # of failing the whole run for an optional column
+                        direct = False
+                        direct_error = "%s: %s" % (type(exc).__name__, str(exc)[:160])
+                    if direct_error:
+                        entry["directivity_error"] = direct_error
                     if direct:
                         direct_name = _resolve_report_name(direct)
                         direct_path = Path(post.export_report_to_csv(out_dir, direct_name))
