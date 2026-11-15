@@ -630,41 +630,24 @@ class PyAedtBackend:
         None means the probe itself was inconclusive (attribute/API missing or
         an unexpected vendor error such as KeyError('HFSS Terminal Network')).
         """
-        probe: bool | None = None
         try:
-            setups = getattr(app, "setups", None) or []
-            known = []
-            for setup in setups:
-                name = str(getattr(setup, "name", ""))
-                if name != str(setup_name):
+            known: list[bool] = []
+            for setup in getattr(app, "setups", None) or []:
+                if str(getattr(setup, "name", "")) != str(setup_name):
                     continue
                 solved = getattr(setup, "is_solved", None)
-                if solved is None:
-                    continue
-                known.append(bool(solved))
+                if solved is not None:
+                    known.append(bool(solved))
             if known:
                 return any(known)
         except Exception:
             # vendor internals can raise for Terminal/mixed solution types
             return None
-        post = getattr(app, "post", None)
-        if post is None:
-            return None
-        try:
-            data = post.get_solution_data(
-                expressions=["dB(S(1,1))"],
-                setup_sweep_name="%s : LastAdaptive" % setup_name,
-                report_category="Modal Solution Data",
-            )
-        except Exception:
-            return False
-        if isinstance(data, bool):
-            return data
-        if getattr(data, "full_matrix_imag", None) is not None or getattr(
-            data, "full_matrix_real_imag", None
-        ):
-            return True
-        return probe
+        # Do NOT fall back to a report/solution-data query here: on designs whose sweeps the app
+        # created, PyAEDT's report plumbing prints repeated AEDT script-macro errors ("Solution is
+        # not a property name") into the user's message window, once per job, before the solve, and
+        # the answer only restates what the setup already exposes. "Could not determine" is honest.
+        return None
 
     def _preflight_design(
         self,
