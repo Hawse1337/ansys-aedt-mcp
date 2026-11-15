@@ -374,12 +374,21 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
                 # the design reports only gain, so the directivity comes from integrating the
                 # whole sphere rather than from a DirectivityTotal column
                 try:
-                    from .pattern import directivity_from_grid, read_sphere_grid
+                    from .pattern import (directivity_from_grid,
+                                          directivity_horizontal_from_grid,
+                                          read_sphere_grid)
 
                     thetas, _phis, values = read_sphere_grid(grid_path)
                     detail["directivity_db"] = directivity_from_grid(thetas, values)
                     detail["radiation_efficiency"] = radiation_efficiency(
                         peak, detail["directivity_db"])
+                    # the brief asks for radiation concentrated at theta = 90 deg, so the
+                    # horizontal plane peak is a first-class number, not a derived extra
+                    horizontal = directivity_horizontal_from_grid(
+                        thetas, values, horiz_theta)
+                    detail["directivity_horiz_db"] = horizontal["horizontal_db"]
+                    detail["horiz_theta_deg"] = horizontal["horizontal_theta"]
+                    detail["horiz_phi_deg"] = horizontal["horizontal_phi"]
                 except Exception:  # noqa: BLE001 - the metric stays absent rather than wrong
                     pass
             directivity_source = paths.get("theta_directivity") or paths["theta"]
@@ -473,6 +482,15 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
             "value": float(max(directivities)),
             "per_frequency": {k: v["directivity_db"] for k, v in per_frequency.items()
                                if v.get("directivity_db") is not None},
+        }
+    horizontal = [v["directivity_horiz_db"] for v in per_frequency.values()
+                  if v.get("directivity_horiz_db") is not None]
+    if horizontal:
+        # worst case across frequencies: the constraint is about the horizontal plane
+        result["metrics"]["directivity_horiz_db"] = {
+            "value": float(min(horizontal)),
+            "per_frequency": {k: v["directivity_horiz_db"] for k, v in per_frequency.items()
+                               if v.get("directivity_horiz_db") is not None},
         }
     if efficiencies:
         # worst case across frequencies: an efficiency that collapses at one frequency is a
