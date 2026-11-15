@@ -35,33 +35,66 @@ def read_sphere_grid(path: str | Path) -> tuple[list[float], list[float], list[l
         rows = list(csv.reader(handle))
     if len(rows) < 3:
         raise ValueError("sphere grid has too few rows: %s" % target)
-    header = [cell.strip() for cell in rows[0]]
-    # first two columns are Freq and Theta; the rest are phi families
-    phi_column = [index for index, name in enumerate(header) if name.startswith("dB(")]
-    if not phi_column:
+    header = [cell.strip().strip('"') for cell in rows[0]]
+
+    def column(prefix: str) -> int | None:
+        for index, name in enumerate(header):
+            if name.lower().startswith(prefix.lower()):
+                return index
+        return None
+
+    theta_column = column("Theta")
+    phi_column = column("Phi")
+    value_columns = [index for index, name in enumerate(header) if name.startswith("dB(")]
+    if not value_columns:
         raise ValueError("sphere grid has no dB(...) column: %s" % header[:6])
-    phis: list[float] = []
-    for index in phi_column:
-        name = header[index]
-        # names look like "dB(GainTotal) [dB]" repeated, so the phi comes from the metadata
-        phis.append(float(index))
+
+    if theta_column is not None and phi_column is not None and len(value_columns) == 1:
+        # flattened layout: one row per (theta, phi); pivot into a theta-major grid
+        value_column = value_columns[0]
+        cells: dict[tuple[float, float], float] = {}
+        for row in rows[1:]:
+            if len(row) <= max(theta_column, phi_column, value_column):
+                continue
+            try:
+                theta = float(row[theta_column])
+                phi = float(row[phi_column])
+                value = float(row[value_column])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            cells[(round(theta, 6), round(phi, 6))] = value
+        if len(cells) < 3:
+            raise ValueError("sphere grid has too few finite samples: %s" % target)
+        thetas = sorted({theta for theta, _phi in cells})
+        phis = sorted({phi for _theta, phi in cells})
+        values = [[cells.get((theta, phi), MIN_DB) for phi in phis] for theta in thetas]
+        if len(thetas) < 3 or len(phis) < 3:
+            raise ValueError("sphere grid is not two-dimensional: %d x %d"
+                             % (len(thetas), len(phis)))
+        return thetas, phis, values
+
+    # matrix layout: one row per theta, one dB column per phi family
+    if theta_column is None:
+        raise ValueError("sphere grid has no Theta column: %s" % header[:6])
     grid: dict[float, dict[int, float]] = {}
     for row in rows[1:]:
-        if len(row) <= max(phi_column):
+        if len(row) <= max(value_columns):
             continue
         try:
-            theta = float(row[1])
+            theta = float(row[theta_column])
         except (TypeError, ValueError):
             continue
         slot = grid.setdefault(theta, {})
-        for index in phi_column:
+        for index in value_columns:
             try:
                 slot[index] = float(row[index])
             except (TypeError, ValueError):
                 continue
     thetas = sorted(grid)
-    ordered_phis = [float(index) for index in phi_column]
-    values = [[grid[theta].get(index, MIN_DB) for index in phi_column] for theta in thetas]
+    ordered_phis = [float(index) for index in value_columns]
+    values = [[grid[theta].get(index, MIN_DB) for index in value_columns] for theta in thetas]
     return thetas, ordered_phis, values
 
 
