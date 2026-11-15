@@ -53,6 +53,27 @@ _ATTACH_LOCK = threading.RLock()
 _AUDITED_PYAEDT_VERSION = "1.9.0"
 
 
+def _clear_design_reports(app: Any) -> int:
+    """Delete every report plot in the *campaign copy* of the design; returns how many were removed.
+
+    Inherited plots from the reference project are what makes PyAEDT's PostProcessor enumerate traces it
+    cannot resolve, printing 'Solution is not a property name' into AEDT's message window on every
+    measurement. The campaign project copy is disposable, so cleaning it is the honest place to stop it.
+    """
+    try:
+        design = getattr(app, "odesign", None)
+        if design is None:
+            return 0
+        reporter = design.GetModule("ReportSetup")
+        names = [str(name) for name in (reporter.GetAllReportNames() or [])]
+        if not names:
+            return 0
+        reporter.DeleteReports(names)
+        return len(names)
+    except Exception:  # noqa: BLE001 - cleanup must never fail a run
+        return 0
+
+
 def _drop_report(post: Any, name: str) -> None:
     """Best-effort deletion of a report the guard itself created.
 
@@ -671,6 +692,7 @@ class PyAedtBackend:
         target: AedtTarget,
         arguments: Mapping[str, Any],
     ) -> dict[str, Any]:
+        reports_cleared = _clear_design_reports(app)
         attempts = arguments.get("validate_attempts", 3)
         try:
             attempts = max(1, int(attempts))
@@ -724,6 +746,7 @@ class PyAedtBackend:
             "ff_sphere_present": ff_sphere_present,
             "ff_sphere_required": require_ff_sphere,
             "solution_data_present_before_submit": solution_data_present,
+            "reports_cleared": reports_cleared,
             "last_error": last_error,
             "note": "preflight passed; evidence fields None mean 'could not determine'.",
         }
