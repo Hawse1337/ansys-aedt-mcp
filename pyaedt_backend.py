@@ -53,6 +53,22 @@ _ATTACH_LOCK = threading.RLock()
 _AUDITED_PYAEDT_VERSION = "1.9.0"
 
 
+def _drop_report(post: Any, name: str) -> None:
+    """Best-effort deletion of a report the guard itself created.
+
+    PyAEDT's PostProcessor walks every plot it finds and probes a 'Solution' property on each trace;
+    a plot the guard leaves behind makes AEDT print a script-macro error on every later job. Deleting
+    our own reports after exporting the CSV keeps that noise away and leaves user reports untouched.
+    """
+    delete = getattr(post, "delete_report", None)
+    if not callable(delete):
+        return
+    try:
+        delete(name)
+    except Exception:  # noqa: BLE001 - cleanup must never fail a measurement
+        pass
+
+
 def _resolve_report_name(report: Any) -> str:
     """Return the identifier ``export_report_to_csv`` expects.
 
@@ -837,6 +853,7 @@ class PyAedtBackend:
                     )
                 report_name = _resolve_report_name(rep)
                 exported = Path(post.export_report_to_csv(out_dir, report_name))
+                _drop_report(post, report_name)
                 rows = 0
                 if exported.is_file():
                     try:
@@ -881,6 +898,7 @@ class PyAedtBackend:
                     if direct:
                         direct_name = _resolve_report_name(direct)
                         direct_path = Path(post.export_report_to_csv(out_dir, direct_name))
+                        _drop_report(post, direct_name)
                         entry["directivity_path"] = str(direct_path)
                         entry["directivity_rows"] = sum(
                             1 for _ in direct_path.open(encoding="utf-8")) \
