@@ -81,6 +81,19 @@ The GUI recomputes the SHA-256, copies the candidate to
 `C:\ProgramData\ansys-aedt-mcp\approved\<builder>.py`, backs up the allowlist, and updates it
 atomically. The CLI (`tools/approve_builder.py`) remains available for automation.
 
+## GUI v2 notes
+
+`AEDT Builder Approver v2.exe` adds:
+
+- **candidate status**: shows the current approved hash vs the candidate's freshly computed hash
+  (ignore stale hashes quoted in chat; the GUI always recomputes);
+- **Edit params schema**: e.g. add `"gap"` to `feed.values` before approving; saving updates the
+  allowlist with a backup.
+
+Approve the candidate script only after reviewing the diff; the allowlist keeps pointing at the
+frozen `approved/<builder>.py` copy (do not follow old instructions that point it back into the
+campaign workspace).
+
 ## Keeping the approved copy in sync
 
 The repository ships an operator helper at `tools/approve_builder.py` (a local copy is also

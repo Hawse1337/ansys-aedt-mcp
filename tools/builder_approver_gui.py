@@ -94,13 +94,19 @@ class ApproverApp:
         candidate = ttk.LabelFrame(root, text="候选新版本（要批准的文件）", padding=8)
         candidate.pack(fill="x", padx=8, pady=6)
         self.candidate_var = tk.StringVar()
+        self.candidate_var.trace_add("write", lambda *_: self._update_candidate_status())
         ttk.Entry(candidate, textvariable=self.candidate_var).pack(side="left", fill="x", expand=True)
         ttk.Button(candidate, text="浏览...", command=self.browse_candidate).pack(side="left", padx=4)
         ttk.Button(candidate, text="查看差异", command=self.show_diff).pack(side="left")
+        self.candidate_status_var = tk.StringVar(value="（未选择候选文件）")
+        ttk.Label(candidate, textvariable=self.candidate_status_var, foreground="#555").pack(
+            fill="x", pady=(6, 0)
+        )
 
         actions = ttk.Frame(root, padding=(8, 0))
         actions.pack(fill="x")
         ttk.Button(actions, text="批准并更新 allowlist", command=self.apply_approval).pack(side="left")
+        ttk.Button(actions, text="编辑参数 schema", command=self.edit_schema).pack(side="left", padx=6)
         ttk.Button(actions, text="打开 approved 目录", command=self.open_approved_dir).pack(side="left", padx=6)
         ttk.Button(actions, text="退出", command=root.destroy).pack(side="right")
 
@@ -163,6 +169,7 @@ class ApproverApp:
                     self.current_id = ids[0]
                 self.builder_var.set(self.current_id)
                 self.on_select()
+                self._update_candidate_status()
             else:
                 self.status_var.set("allowlist 中没有 builder")
         except Exception as exc:  # noqa: BLE001
@@ -172,6 +179,7 @@ class ApproverApp:
     def on_select(self) -> None:
         self.current_id = self.builder_var.get() or None
         self.check_current()
+        self._update_candidate_status()
 
     def check_current(self) -> None:
         entry = self._entry()
@@ -192,6 +200,70 @@ class ApproverApp:
             self.status_var.set("检查失败: %s" % exc)
             self._log("错误: %r" % (exc,))
 
+    def _update_candidate_status(self) -> None:
+        entry = self._entry()
+        candidate = Path(self.candidate_var.get()).expanduser() if self.candidate_var.get().strip() else None
+        if not entry or candidate is None or not candidate.is_file():
+            self.candidate_status_var.set("（未选择有效的候选文件）")
+            return
+        try:
+            current_hash = str(entry.get("sha256", "")).lower()
+            candidate_hash = sha256(candidate)
+            if candidate_hash == current_hash:
+                self.candidate_status_var.set("候选与当前已批准版本一致（sha256 %s）" % candidate_hash[:16])
+            else:
+                self.candidate_status_var.set(
+                    "候选已变化：当前 %s → 候选 %s" % (current_hash[:16], candidate_hash[:16])
+                )
+        except Exception as exc:  # noqa: BLE001
+            self.candidate_status_var.set("无法读取候选文件: %s" % exc)
+
+    def edit_schema(self) -> None:
+        entry = self._entry()
+        if not entry:
+            messagebox.showwarning("未选择 builder", "请先选择一个 builder。")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("编辑参数 schema — %s" % self.current_id)
+        dialog.geometry("760x560")
+        dialog.transient(self.root)
+        info = ttk.Label(
+            dialog,
+            text="修改 params JSON（例如给 feed.values 增加 \"gap\"），保存后立即更新 allowlist。",
+            padding=8,
+        )
+        info.pack(fill="x")
+        editor = tk.Text(dialog, wrap="none")
+        editor.pack(fill="both", expand=True, padx=8)
+        editor.insert("1.0", json.dumps(entry.get("params", {}), ensure_ascii=False, indent=2))
+
+        def save() -> None:
+            try:
+                params = json.loads(editor.get("1.0", "end"))
+                if not isinstance(params, dict):
+                    raise ValueError("params 必须是 JSON 对象")
+                if self.allowlist_path.is_file():
+                    backup = self.allowlist_path.with_name(
+                        self.allowlist_path.name
+                        + ".bak-"
+                        + __import__("time").strftime("%Y%m%d-%H%M%S")
+                    )
+                    shutil.copy2(self.allowlist_path, backup)
+                entry["params"] = params
+                self.data["builders"][self.current_id] = entry
+                save_allowlist(self.allowlist_path, self.data)
+                self._log("[schema] %s params updated: %s" % (self.current_id, json.dumps(params, ensure_ascii=False)))
+                messagebox.showinfo("已保存", "参数 schema 已更新。")
+                dialog.destroy()
+                self.refresh()
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("保存失败", str(exc))
+
+        buttons = ttk.Frame(dialog, padding=8)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="保存", command=save).pack(side="left")
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="left", padx=6)
+
     def show_diff(self) -> None:
         entry = self._entry()
         candidate = Path(self.candidate_var.get()).expanduser()
@@ -205,6 +277,8 @@ class ApproverApp:
             difflib.unified_diff(before, after, fromfile=str(current), tofile=str(candidate), lineterm="")
         )
         self._log("\n=== DIFF ===")
+        self._log("current sha256: %s" % entry.get("sha256", ""))
+        self._log("candidate sha256: %s" % sha256(candidate))
         self._log("\n".join(diff[:4000]) if diff else "(无文本差异)")
         self._log(
             "\n检查清单：几何/边界/端口、是否删除工程、是否额外启动 AEDT、输出路径是否越界。\n"
