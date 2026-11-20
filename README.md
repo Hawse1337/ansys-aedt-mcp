@@ -12,6 +12,72 @@ This module lets MCP clients such as Codex and DeepSeek Harness control Ansys El
 
 **Guard rails:** managed-only AEDT attach, unmanaged-session detection, best-effort command audit, arbitrary-code off by default, and a fail-closed policy shipped for both clients. Start with [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [docs/CLIENTS.md](docs/CLIENTS.md); DSH/Codex ready-to-use configs and the patched AEDT skill live under [examples/clients/](examples/clients/).
 
+## What it is
+
+`ansys-aedt-mcp` is a guarded MCP server for Ansys Electronics Desktop. It sits between an MCP
+client (DeepSeek Harness, Codex, or your own agent) and AEDT, and adds a lifecycle/evidence layer on
+top of the official [PyAEDT-MCP](https://github.com/ansys/pyaedt-mcp):
+
+- managed AEDT sessions (the guard records what it launched and refuses unmanaged attach);
+- unmanaged-session detection (`guard_status`);
+- arbitrary broker code off by default;
+- run-token-scoped solves and guarded-run audit;
+- PyAEDT app identity checks and launch/release auditing;
+- fail-closed client configurations and a threat model.
+
+It is a **guard**, not an OS sandbox: same-user shell access can still start AEDT directly. Use OS
+isolation (separate account/VM, AppLocker/WDAC) when you need a hard boundary.
+
+## Quick start
+
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -U pip
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+Then connect an MCP client to `.\mcp_server.py` (stdio). See
+[docs/CLIENTS.md](docs/CLIENTS.md) for DeepSeek Harness and Codex configurations, and
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the security boundary.
+
+```text
+1. check_aedt_installed                     # AEDT / PyAEDT availability
+2. guard_status                              # managed vs unmanaged sessions, audit health
+3. launch_aedt(non_graphical=True)          # returns managed:true with pid/port
+4. connect_to_aedt(port=...) / guarded tools # only this session is served
+```
+
+## Security controls at a glance
+
+| control | behaviour |
+|---|---|
+| managed-only attach | guard-launched AEDT is recorded (PID, create time, port, verified); unmanaged sessions are refused |
+| unmanaged detection | `guard_status` lists every live `ansysedt.exe` as managed/unmanaged and reports `scan.enforcement` |
+| arbitrary code | `run_python_code` / `run_python_script` refused at MCP and worker layers unless a human operator enables them |
+| tokens | `AEDT_GUARD_ENFORCE=1` binds run tokens to project/design/setup; solve entries are covered |
+| audit | launch/release and guarded-run commands land in `guard_audit.jsonl` with enforcement-mode fields |
+| identity | PyAEDT app objects are checked against the verified desktop |
+
+## Clients
+
+Fail-closed, ready-to-use configurations live in [`examples/clients/`](examples/clients/):
+
+- **DeepSeek Harness** — installable MCP bundle (`mcp__aedt__*`), global `AGENTS.md` rule and a
+  patched AEDT skill;
+- **Codex** — `config.toml` with `required = true`, `default_tools_approval_mode = "prompt"`,
+  `disabled_tools = ["run_python_code", "run_python_script"]`, plus `AGENTS.md`.
+
+Both clients stop when the guard tools are missing; they never fall back to direct PyAEDT or
+`ansysedt.exe`.
+
+## Verification
+
+- Offline suite: **469 passed, 1 skipped, 118 subtests**.
+- Live on AEDT 2026 R1 / PyAEDT 1.10.0: unmanaged attach refused, guard-launched session
+  `managed: true`, `run_python_code` refused.
+- Releases and the hardened package are published at:
+  https://github.com/Hawse1337/pyaedt-mcp-hardening-kit/releases
+
 ## Enforcement boundary (v0.3.2)
 
 Guard-launched AEDT sessions are recorded and only those sessions can be attached through
