@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 import tkinter as tk
 from pathlib import Path
@@ -27,6 +28,60 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 GUARD_DIR = Path(r"C:\ProgramData\ansys-aedt-mcp")
 DEFAULT_ALLOWLIST = GUARD_DIR / "builders.local.json"
 DEFAULT_APPROVED_DIR = GUARD_DIR / "approved"
+
+BG = "#F1F5F9"
+CARD = "#FFFFFF"
+NAVY = "#0B1220"
+NAVY_SOFT = "#111C33"
+TEAL = "#0F766E"
+TEAL_HOVER = "#115E59"
+ACCENT = "#F59E0B"
+TEXT = "#0F172A"
+MUTED = "#64748B"
+BORDER = "#E2E8F0"
+
+
+def asset_path(name: str) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / "assets" / name
+
+
+def apply_modern_style(root: tk.Tk) -> None:
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except Exception:  # noqa: BLE001
+        pass
+    style.configure(".", font=("Segoe UI", 10))
+    style.configure("TFrame", background=CARD)
+    style.configure("Bg.TFrame", background=BG)
+    style.configure("TLabel", background=CARD, foreground=TEXT)
+    style.configure("Muted.TLabel", background=CARD, foreground=MUTED)
+    style.configure("Header.TLabel", background=NAVY, foreground="#F8FAFC",
+                    font=("Segoe UI Semibold", 20))
+    style.configure("HeaderSub.TLabel", background=NAVY, foreground="#94A3B8",
+                    font=("Segoe UI", 10))
+    style.configure("Badge.TLabel", background="#132B3A", foreground="#5EEAD4",
+                    font=("Segoe UI Semibold", 9), padding=(10, 5))
+    style.configure("TLabelframe", background=CARD, bordercolor=BORDER,
+                    relief="solid", borderwidth=1, padding=12)
+    style.configure("TLabelframe.Label", background=CARD, foreground=MUTED,
+                    font=("Segoe UI Semibold", 9))
+    style.configure("TButton", background="#E2E8F0", foreground=TEXT,
+                    borderwidth=0, padding=(12, 7), font=("Segoe UI Semibold", 9))
+    style.map("TButton", background=[("active", "#CBD5E1"), ("disabled", "#EDF2F7")])
+    style.configure("Accent.TButton", background=TEAL, foreground="#FFFFFF",
+                    borderwidth=0, padding=(15, 8), font=("Segoe UI Semibold", 10))
+    style.map("Accent.TButton", background=[("active", TEAL_HOVER), ("disabled", "#94A3B8")])
+    style.configure("Secondary.TButton", background="#EEF2F7", foreground=TEXT,
+                    borderwidth=0, padding=(12, 7), font=("Segoe UI Semibold", 9))
+    style.map("Secondary.TButton", background=[("active", "#DDE5EE")])
+    style.configure("TEntry", fieldbackground="#FFFFFF", bordercolor=BORDER,
+                    lightcolor=BORDER, darkcolor=BORDER, padding=6)
+    style.configure("TCombobox", fieldbackground="#FFFFFF", padding=4)
+    style.configure("TCheckbutton", background=CARD, foreground=TEXT)
+    style.map("TCheckbutton", background=[("active", CARD)])
+
 
 
 def sha256(path: Path) -> str:
@@ -119,8 +174,11 @@ class ApproverApp:
         self.request_meta_stale = False
 
         root.title("AEDT Builder Approver")
-        root.geometry("1120x780")
-        root.minsize(900, 650)
+        root.geometry("1180x820")
+        root.minsize(980, 700)
+        root.configure(bg=BG)
+        apply_modern_style(root)
+        self._build_header(root)
 
         top = ttk.Frame(root, padding=8)
         top.pack(fill="x")
@@ -138,14 +196,17 @@ class ApproverApp:
         self.builder_combo = ttk.Combobox(row, textvariable=self.builder_var, width=32, state="readonly")
         self.builder_combo.pack(side="left", padx=6)
         self.builder_combo.bind("<<ComboboxSelected>>", lambda _event: self.on_select())
-        ttk.Button(row, text="检查状态", command=self.check_current).pack(side="left", padx=4)
+        ttk.Button(row, text="检查状态", command=self.check_current, style="Secondary.TButton").pack(side="left", padx=4)
 
         status = ttk.LabelFrame(root, text="当前批准状态", padding=8)
         status.pack(fill="x", padx=8, pady=6)
         self.status_var = tk.StringVar(value="（未加载）")
         self.status_label = ttk.Label(status, textvariable=self.status_var, foreground="#555")
         self.status_label.pack(anchor="w")
-        self.detail = tk.Text(status, height=4, wrap="word", state="disabled")
+        self.detail = tk.Text(
+            status, height=4, wrap="word", state="disabled", bg="#FFFFFF",
+            fg=TEXT, relief="flat", font=("Consolas", 9), padx=10, pady=8,
+        )
         self.detail.pack(fill="x", pady=(6, 0))
 
         candidate = ttk.LabelFrame(root, text="候选新版本（要审核批准的文件）", padding=8)
@@ -161,7 +222,7 @@ class ApproverApp:
         ttk.Button(path_row, text="打开所在文件夹", command=self.open_candidate_dir).pack(side="left", padx=4)
         self.full_path_var = tk.StringVar(value="完整路径：")
         self.full_path_label = ttk.Label(
-            candidate, textvariable=self.full_path_var, foreground="#333", wraplength=1020
+            candidate, textvariable=self.full_path_var, style="Muted.TLabel", wraplength=1020
         )
         self.full_path_label.pack(fill="x", pady=(6, 0))
         candidate.bind(
@@ -173,12 +234,12 @@ class ApproverApp:
             fill="x", pady=(6, 0)
         )
         self.request_info_var = tk.StringVar(value="请求来源：（未选择候选）")
-        ttk.Label(candidate, textvariable=self.request_info_var, foreground="#555", wraplength=1020).pack(
+        ttk.Label(candidate, textvariable=self.request_info_var, style="Muted.TLabel", wraplength=1020).pack(
             fill="x"
         )
         action_row = ttk.Frame(candidate)
         action_row.pack(fill="x", pady=(6, 0))
-        ttk.Button(action_row, text="检查候选版本", command=self.check_candidate).pack(side="left")
+        ttk.Button(action_row, text="检查候选版本", command=self.check_candidate, style="Accent.TButton").pack(side="left")
         self.full_diff_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(action_row, text="显示完整差异（可选）", variable=self.full_diff_var).pack(
             side="left", padx=8
@@ -187,14 +248,18 @@ class ApproverApp:
 
         actions = ttk.Frame(root, padding=(8, 0))
         actions.pack(fill="x")
-        ttk.Button(actions, text="批准并更新 allowlist", command=self.apply_approval).pack(side="left")
+        ttk.Button(actions, text="批准并更新 allowlist", command=self.apply_approval, style="Accent.TButton").pack(side="left")
         ttk.Button(actions, text="编辑参数 schema", command=self.edit_schema).pack(side="left", padx=6)
         ttk.Button(actions, text="打开 approved 目录", command=self.open_approved_dir).pack(side="left", padx=6)
         ttk.Button(actions, text="退出", command=root.destroy).pack(side="right")
 
         logbox = ttk.LabelFrame(root, text="检查摘要 / 日志", padding=8)
         logbox.pack(fill="both", expand=True, padx=8, pady=6)
-        self.log = scrolledtext.ScrolledText(logbox, wrap="word", state="disabled")
+        self.log = scrolledtext.ScrolledText(
+            logbox, wrap="word", state="disabled", bg="#0B1220", fg="#E2E8F0",
+            insertbackground="#E2E8F0", relief="flat", font=("Consolas", 9),
+            padx=10, pady=8,
+        )
         self.log.pack(fill="both", expand=True)
         self.refresh()
 
@@ -220,6 +285,43 @@ class ApproverApp:
     def _candidate(self) -> Path | None:
         text = self.candidate_var.get().strip()
         return Path(text).expanduser() if text else None
+
+    # ---- chrome ------------------------------------------------------
+    def _build_header(self, root: tk.Tk) -> None:
+        header = tk.Frame(root, bg=NAVY, height=96)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        self._logo_img = None
+        logo_path = asset_path("aedt_builder_approver_128.png")
+        if logo_path.is_file():
+            try:
+                self._logo_img = tk.PhotoImage(file=str(logo_path))
+                tk.Label(header, image=self._logo_img, bg=NAVY).pack(
+                    side="left", padx=(22, 14), pady=14
+                )
+            except Exception:  # noqa: BLE001
+                self._logo_img = None
+        text_frame = tk.Frame(header, bg=NAVY)
+        text_frame.pack(side="left", fill="y", pady=(17, 0))
+        tk.Label(
+            text_frame, text="AEDT Builder Approver", bg=NAVY, fg="#F8FAFC",
+            font=("Segoe UI Semibold", 20),
+        ).pack(anchor="w")
+        tk.Label(
+            text_frame,
+            text="Operator console · review builder capabilities, not every run",
+            bg=NAVY, fg="#94A3B8", font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(3, 0))
+        tk.Label(
+            header, text="LOCAL  ·  OPERATOR", bg="#132B3A", fg="#5EEAD4",
+            font=("Segoe UI Semibold", 9), padx=10, pady=5,
+        ).pack(side="right", padx=22)
+        icon_path = asset_path("aedt_builder_approver.ico")
+        if icon_path.is_file():
+            try:
+                root.iconbitmap(str(icon_path))
+            except Exception:  # noqa: BLE001
+                pass
 
     # ---- paths -------------------------------------------------------
     def browse_allowlist(self) -> None:

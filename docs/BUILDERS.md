@@ -148,3 +148,11 @@ Residual risks:
 - Approved code can create arbitrary AEDT objects/analysis; approval covers every branch of the
   script.
 - The guard verifies the working project and audited session, but it is not a solver sandbox.
+
+
+## GUI v5 appearance
+
+The approver ships with a custom shield/check logo (`tools/assets/aedt_builder_approver.ico`),
+a dark navy header, Segoe UI typography, teal primary actions, amber accent and a dark log panel.
+The window is resizable; the candidate path expands and wraps. Regenerate the icon with
+`python tools/make_approver_icon.py`.
