@@ -1226,8 +1226,7 @@ def verify_artifacts(
     return {"files": results, "all_ok": all(v["ok"] for v in results.values())}
 
 
-@mcp.tool()
-def clear_stale_lock(project_path: str, force: bool = False) -> dict[str, Any]:
+def _clear_stale_lock_impl(project_path: str, force: bool = False) -> dict[str, Any]:
     """Remove a stale ``*.aedt.lock`` only when its owner is provably gone.
 
     Fails closed: no recognizable owner PID, or an owner process that is still
@@ -1295,6 +1294,31 @@ def clear_stale_lock(project_path: str, force: bool = False) -> dict[str, Any]:
         return {"cleared": True, "removed_path": str(lock), "owner_pid": owner_pid}
     except OSError as exc:
         return {"cleared": False, "reason": "delete_failed", "error": repr(exc)[:200]}
+
+
+@mcp.tool()
+def clear_stale_lock(project_path: str, force: bool = False) -> dict[str, Any]:
+    """Remove a stale ``*.aedt.lock`` only when its owner is provably gone.
+
+    The action is written to the guard-wide audit log, including the refused cases.
+    """
+    result = _clear_stale_lock_impl(project_path, force)
+    _audit_worker_call(
+        "clear_stale_lock",
+        pid=None,
+        port=None,
+        arguments={"project_path": project_path, "force": force},
+        outcome="allowed" if result.get("cleared") else "refused",
+        detail=json.dumps(
+            {
+                "cleared": result.get("cleared"),
+                "owner_pid": result.get("owner_pid"),
+                "reason": result.get("reason"),
+            },
+            ensure_ascii=False,
+        ),
+    )
+    return result
 
 
 @mcp.tool()

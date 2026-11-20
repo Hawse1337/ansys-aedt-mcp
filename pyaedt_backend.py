@@ -307,6 +307,13 @@ def _default_desktop_factory(**kwargs: Any) -> Any:
                 "PID %s has no discoverable gRPC port; attach by the verified gRPC port instead "
                 "(guard launches always record one)" % expected_pid
             )
+        if expected_port is not None and (
+            not isinstance(expected_port, int) or expected_port <= 0
+        ):
+            raise BackendCommandError("gRPC port must be a positive integer")
+        # For an explicit PID the port comes from that process's own command line, so the
+        # PID->port binding is proven without enumerating sockets (an intentional invariant).
+        # Post-attach checks below re-verify the returned PID and port.
         vendor_kwargs = dict(kwargs)
         if expected_port is not None:
             # PyAEDT 1.10 rejects version+PID together (and PID-only needs a version). Attaching
@@ -336,9 +343,35 @@ def _default_desktop_factory(**kwargs: Any) -> Any:
 
 
 def _default_hfss_factory(**kwargs: Any) -> Any:
-    from ansys.aedt.core import Hfss
+    """Construct an app object without letting PyAEDT launch a fallback AEDT.
 
-    return Hfss(**kwargs)
+    App constructors create their own Desktop session; without the attach-only wrapper a
+    multi-version host can make PyAEDT choose a different version and silently spawn an
+    unmanaged AEDT. Bind to the verified PID/port and keep the wrapper installed.
+    """
+    expected_pid, expected_started = _existing_target_owner(kwargs)
+    configured_port, _ = _pid_launch_hints(expected_pid)
+    expected_port = kwargs.get("port") or configured_port
+    if expected_port is None:
+        raise BackendCommandError(
+            "HFSS app construction requires a verified gRPC port; refusing an implicit launch"
+        )
+    if not isinstance(expected_port, int) or expected_port <= 0:
+        raise BackendCommandError("gRPC port must be a positive integer")
+    vendor_kwargs = dict(kwargs)
+    vendor_kwargs.pop("aedt_process_id", None)
+    vendor_kwargs.update({"machine": "localhost", "port": expected_port})
+    module = _audited_desktop_module()
+    with _attach_only_desktop(
+        module,
+        kwargs,
+        verified_owner=(expected_pid, expected_started),
+        grpc_port_hint=expected_port,
+    ):
+        from ansys.aedt.core import Hfss
+
+        app = Hfss(**vendor_kwargs)
+    return app
 
 
 def _assert_app_on_verified_desktop(app: Any, desktop: Any) -> None:
@@ -488,7 +521,9 @@ class PyAedtBackend:
                 raise BackendCommandError(str(exc)) from exc
         if command in OFFICIAL_BACKEND_COMMANDS:
             desktop = self._desktop_for(target)
-            arguments = self._normalize_arguments(desktop, arguments, prefer_name=True)
+            arguments = self._normalize_arguments(
+                desktop, arguments, prefer_name=command != "create_design"
+            )
             try:
                 result = self._official.execute(
                     command,
@@ -505,6 +540,8 @@ class PyAedtBackend:
                 opened_path = result.get("project_path")
                 if isinstance(opened_path, str) and opened_path.lower().endswith((".aedt", ".aedb")):
                     self._project_paths[Path(opened_path).stem.lower()] = opened_path
+            if command == "close_projects":
+                self._project_paths.clear()
             if command == "disconnect_from_aedt":
                 self._apps.clear()
                 self._desktop = None
@@ -567,6 +604,20 @@ class PyAedtBackend:
 
     @staticmethod
     def _desktop_project_file(desktop: Any) -> str | None:
+        # PyAEDT 1.10: project_file is not a Desktop attribute; use active_project_name plus
+        # project_path(name). Keep project_file as a fallback for fakes/older builds.
+        name = getattr(desktop, "active_project_name", None)
+        if callable(name):
+            name = name()
+        if isinstance(name, str) and name:
+            getter = getattr(desktop, "project_path", None)
+            if callable(getter):
+                try:
+                    value = getter(name)
+                except TypeError:
+                    value = getter()
+                if isinstance(value, (str, Path)) and str(value).lower().endswith((".aedt", ".aedb")):
+                    return str(value)
         value = getattr(desktop, "project_file", None)
         if isinstance(value, (str, Path)) and str(value).lower().endswith((".aedt", ".aedb")):
             return str(value)
@@ -587,22 +638,25 @@ class PyAedtBackend:
         lowered = text.lower()
         if lowered.endswith((".aedt", ".aedb")) or "/" in text or "\\" in text:
             path = Path(text).expanduser()
-            if path.is_file():
+            if path.is_file() or (path.suffix.lower() == ".aedb" and path.is_dir()):
                 resolved = str(path.resolve())
-                self._project_paths.setdefault(path.stem.lower(), resolved)
                 return path.stem if prefer_name else resolved
             return text
         key = text.lower()
         if key in self._project_paths:
             return Path(self._project_paths[key]).stem if prefer_name else self._project_paths[key]
-        active = getattr(desktop, "active_project", None)
-        active = active() if callable(active) else active
-        if isinstance(active, str) and active.lower() == key:
-            project_file = self._desktop_project_file(desktop)
-            if project_file:
-                self._project_paths[key] = project_file
-                return Path(project_file).stem if prefer_name else project_file
+        active = getattr(desktop, "active_project_name", None)
+        if callable(active):
+            active = active()
+        if not isinstance(active, str) or not active:
+            legacy = getattr(desktop, "active_project", None)
+            legacy = legacy() if callable(legacy) else legacy
+            if isinstance(legacy, str):
+                active = legacy
         project_file = self._desktop_project_file(desktop)
+        if isinstance(active, str) and active.lower() == key and project_file:
+            self._project_paths[key] = project_file
+            return Path(project_file).stem if prefer_name else project_file
         if project_file and Path(project_file).stem.lower() == key:
             self._project_paths[key] = project_file
             return Path(project_file).stem if prefer_name else project_file
@@ -633,6 +687,7 @@ class PyAedtBackend:
         # "version ... doesn't correspond to the pid" error on some AEDT builds.
         # Let PyAEDT discover the version from the targeted session instead.
         kwargs: dict[str, Any] = {
+            "version": self._version,
             "non_graphical": False,
             "new_desktop": False,
             "close_on_exit": False,
@@ -696,6 +751,7 @@ class PyAedtBackend:
         else:
             project_name = _required_text(arguments, "project_name")
             design_name = _required_text(arguments, "design_name")
+        raw_project_name = project_name
         self._desktop_for(target)
         project_name = self._resolve_project_argument(self._desktop, project_name)
         kwargs = self._connection_kwargs(self._bound_target or target)
@@ -716,7 +772,7 @@ class PyAedtBackend:
             _verdict = _enforce_analyze(
                 "start_analysis",
                 arguments,
-                project=project_name,
+                project=raw_project_name,
                 design=design_name,
                 setup=kwargs["setup"],
             )

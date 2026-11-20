@@ -72,7 +72,7 @@ Both clients stop when the guard tools are missing; they never fall back to dire
 
 ## Verification
 
-- Offline suite: **474 passed, 1 skipped, 118 subtests**.
+- Offline suite: **477 passed, 1 skipped, 118 subtests**.
 - Live on AEDT 2026 R1 / PyAEDT 1.10.0: unmanaged attach refused, guard-launched session
   `managed: true`, `run_python_code` refused.
 - Releases and the hardened package are published at:

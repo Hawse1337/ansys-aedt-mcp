@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Audit follow-ups.** Restored version pinning on attach (version+port; the vendor bug only
+  occurs with version+PID), guarded the HFSS app factory with the attach-only wrapper, use the
+  realistic PyAEDT Desktop project APIs (ctive_project_name/project_path), normalize project
+  arguments per consumer (path for constructors, name for the app resolver; .aedb supported),
+  drop stale project tracking on close_projects, and audit clear_stale_lock deletions.
+- Close verification requires a pre-release identity snapshot and process name before any
+  force-kill; recycled or unverified PIDs are never terminated.
+- Added 	ests/test_close_verification.py; suite is 477 passed, 1 skipped, 118 subtests.
 Follow-up fixes from the second real-agent session (kept on 0.3.2; no new release was cut).
 
 - **PID-target attach.** PyAEDT 1.10.0 rejects `version` + `aedt_process_id` together with a

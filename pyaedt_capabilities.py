@@ -520,29 +520,34 @@ class OfficialCapabilities:
                     break
                 time.sleep(0.25)
             if not exited:
-                try:
-                    process = psutil.Process(pid)
-                    if pid_create_time is not None and abs(
-                        float(process.create_time()) - pid_create_time
-                    ) > 2.0:
-                        # The original AEDT exited and another process reused the PID; never
-                        # terminate a process this session did not launch.
-                        pid_reused = True
-                        exited = True
-                    else:
-                        process.terminate()
-                        for _ in range(20):
-                            if not psutil.pid_exists(pid):
-                                exited = True
-                                break
-                            time.sleep(0.25)
-                        if not exited:
-                            process.kill()
-                            time.sleep(1.0)
-                            exited = not psutil.pid_exists(pid)
-                        forced = True
-                except Exception:  # noqa: BLE001 - report the truth below
-                    exited = not psutil.pid_exists(pid)
+                if pid_create_time is None:
+                    # No pre-release identity snapshot: the PID may have been recycled. Do not
+                    # terminate an unverified process; report it instead.
+                    exited = False
+                else:
+                    try:
+                        process = psutil.Process(pid)
+                        name = (process.name() or "").lower()
+                        if name not in {"ansysedt.exe", "ansysedt"}:
+                            pid_reused = True
+                            exited = True
+                        elif abs(float(process.create_time()) - pid_create_time) > 2.0:
+                            pid_reused = True
+                            exited = True
+                        else:
+                            process.terminate()
+                            for _ in range(20):
+                                if not psutil.pid_exists(pid):
+                                    exited = True
+                                    break
+                                time.sleep(0.25)
+                            if not exited:
+                                process.kill()
+                                time.sleep(1.0)
+                                exited = not psutil.pid_exists(pid)
+                            forced = True
+                    except Exception:  # noqa: BLE001 - report the truth below
+                        exited = not psutil.pid_exists(pid)
         return {
             "target": self._target(target),
             "disconnected": True,
