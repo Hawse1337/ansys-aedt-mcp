@@ -491,6 +491,14 @@ class OfficialCapabilities:
         close_projects = _boolean(arguments, "close_projects", False)
         close_desktop = _boolean(arguments, "close_desktop", False)
         pid = getattr(desktop, "aedt_process_id", None)
+        pid_create_time: float | None = None
+        if close_desktop and isinstance(pid, int) and pid > 0:
+            try:
+                import psutil
+
+                pid_create_time = float(psutil.Process(pid).create_time())
+            except Exception:  # noqa: BLE001 - process may already be gone
+                pid_create_time = None
         released = bool(
             desktop.release_desktop(
                 close_projects=close_projects,
@@ -500,6 +508,7 @@ class OfficialCapabilities:
         self.clear_local_state()
         exited: bool | None = None
         forced = False
+        pid_reused = False
         if close_desktop and isinstance(pid, int) and pid > 0:
             import psutil
             import time
@@ -513,17 +522,25 @@ class OfficialCapabilities:
             if not exited:
                 try:
                     process = psutil.Process(pid)
-                    process.terminate()
-                    for _ in range(20):
-                        if not psutil.pid_exists(pid):
-                            exited = True
-                            break
-                        time.sleep(0.25)
-                    if not exited:
-                        process.kill()
-                        time.sleep(1.0)
-                        exited = not psutil.pid_exists(pid)
-                    forced = True
+                    if pid_create_time is not None and abs(
+                        float(process.create_time()) - pid_create_time
+                    ) > 2.0:
+                        # The original AEDT exited and another process reused the PID; never
+                        # terminate a process this session did not launch.
+                        pid_reused = True
+                        exited = True
+                    else:
+                        process.terminate()
+                        for _ in range(20):
+                            if not psutil.pid_exists(pid):
+                                exited = True
+                                break
+                            time.sleep(0.25)
+                        if not exited:
+                            process.kill()
+                            time.sleep(1.0)
+                            exited = not psutil.pid_exists(pid)
+                        forced = True
                 except Exception:  # noqa: BLE001 - report the truth below
                     exited = not psutil.pid_exists(pid)
         return {
@@ -534,6 +551,7 @@ class OfficialCapabilities:
             "closed_desktop": bool(exited) if close_desktop else False,
             "process_alive": (not exited) if close_desktop and exited is not None else None,
             "forced_termination": forced,
+            "pid_reused": pid_reused,
             "pid": pid,
         }
 

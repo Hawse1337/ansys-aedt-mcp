@@ -16,6 +16,8 @@ Follow-up fixes from the second real-agent session (kept on 0.3.2; no new releas
 - **Truthful close.** `disconnect_from_aedt(close_desktop=true)` now waits for the verified PID,
   force-terminates after a grace period, and returns `closed_desktop`, `process_alive`,
   `forced_termination` and the PID instead of echoing the request.
+- **PID-reuse safety.** Close verification records the AEDT process creation time and will
+  not terminate a process that merely reused the same PID after AEDT exited.
 - Regression tests in `tests/test_guard_followups.py` (469+5 tests).
 
 ## 0.3.2 - 2026-11-20
