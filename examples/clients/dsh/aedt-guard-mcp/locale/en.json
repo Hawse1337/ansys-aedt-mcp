@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "AEDT guard (ansys-aedt-mcp)",
+    "description": "Connects the guarded AEDT MCP server so every AEDT action is lifecycle-checked, auditable and restricted to guard-launched sessions.",
+    "detail": "docs/DETAIL.md"
+  }
+}

@@ -30,6 +30,7 @@ from aedt_guard import (
     task_context,
     update_spec,
 )
+from aedt_guard import managed as managed_sessions
 from aedt_guard.archive import (
     commit_best,
     default_objectives,
@@ -99,6 +100,41 @@ session_discovery = SessionDiscovery(worker_client=worker_client)
 aedt_launcher = AedtLauncher(worker_client=worker_client)
 
 
+GUARD_AUDIT_NAME = "guard_audit.jsonl"
+
+
+def _audit_worker_call(
+    command: str,
+    *,
+    pid: int | None,
+    port: int | None,
+    arguments: dict[str, Any] | None,
+    outcome: str,
+    detail: str = "",
+) -> None:
+    """Append one JSONL line per worker command; failures never break the command."""
+    try:
+        digest = hashlib.sha256(
+            json.dumps(arguments or {}, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        record = {
+            "at_utc": datetime.now(timezone.utc).isoformat(),
+            "command": command,
+            "pid": pid,
+            "port": port,
+            "allowed": outcome == "allowed",
+            "outcome": outcome,
+            "arguments_sha256": digest,
+            "detail": str(detail)[:500],
+        }
+        target = managed_sessions.state_dir() / GUARD_AUDIT_NAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 - audit must be best effort
+        pass
+
+
 def _target(pid: int | None, port: int | None) -> AedtTarget:
     return AedtTarget.from_values(pid=pid, port=port)
 
@@ -112,12 +148,18 @@ async def _worker_call(
     timeout: float | None = None,
 ) -> dict[str, Any]:
     target = _target(pid, port)
-    result = await worker_client.execute_async(
-        target,
-        command,
-        arguments or {},
-        timeout=timeout,
-    )
+    try:
+        result = await worker_client.execute_async(
+            target,
+            command,
+            arguments or {},
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001 - audited then re-raised
+        _audit_worker_call(command, pid=pid, port=port, arguments=arguments,
+                           outcome="refused", detail="%s: %s" % (type(exc).__name__, exc))
+        raise
+    _audit_worker_call(command, pid=pid, port=port, arguments=arguments, outcome="allowed")
     if not isinstance(result, dict):
         raise TypeError(f"AEDT worker command {command} returned a non-object result")
     return result
@@ -152,8 +194,22 @@ async def check_aedt_status(
             "sessions": sessions,
             "session_count": len(sessions),
             "selection_required": bool(sessions),
+            "guard": await asyncio.to_thread(managed_sessions.scan_aedt_processes),
         }
     return await _worker_call("ping", pid=pid, port=port, timeout=timeout)
+
+
+@mcp.tool()
+async def guard_status() -> dict[str, Any]:
+    """Report guard-launched AEDT sessions and flag unmanaged AEDT processes."""
+    scan = await asyncio.to_thread(managed_sessions.scan_aedt_processes)
+    return {
+        "guard": "ansys-aedt-mcp",
+        "allow_unmanaged": managed_sessions.allow_unmanaged(),
+        "managed_sessions": await asyncio.to_thread(managed_sessions.list_managed),
+        "scan": scan,
+        "state_dir": str(managed_sessions.state_dir()),
+    }
 
 
 @mcp.tool()
@@ -187,7 +243,18 @@ async def launch_aedt(
         non_graphical=non_graphical,
         timeout=timeout,
     )
+    try:
+        managed_sessions.record_launch(
+            pid=int(result["pid"]),
+            port=int(result["port"]) if result.get("port") else None,
+            version=selected_version,
+            non_graphical=non_graphical,
+            source="mcp.launch_aedt",
+        )
+    except Exception:  # noqa: BLE001 - never fail a successful launch on bookkeeping
+        pass
     result["launched"] = True
+    result["managed"] = True
     if application:
         result["application"] = await _worker_call(
             "create_design",

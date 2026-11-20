@@ -396,6 +396,8 @@ class PyAedtBackend:
         official_capabilities: OfficialCapabilities | None = None,
         version: str | None = None,
     ) -> None:
+        # Enforcement only applies to the real PyAEDT client; tests inject a fake factory.
+        self._real_aedt = desktop_factory is None
         self._desktop_factory = desktop_factory or _default_desktop_factory
         self._hfss_factory = hfss_factory or _default_hfss_factory
         self._wr90_builder = wr90_builder or _default_wr90_builder
@@ -496,6 +498,10 @@ class PyAedtBackend:
 
     def _desktop_for(self, target: AedtTarget) -> Any:
         if self._desktop is None:
+            if self._real_aedt:
+                from aedt_guard import managed
+
+                managed.enforce_target(target)
             self._desktop = self._desktop_factory(**self._connection_kwargs(target))
             self._bound_target = target
             return self._desktop

@@ -167,6 +167,15 @@ class AedtLauncher:
         deadline = self._monotonic() + effective_timeout
         process = self._process_factory(command, cwd=str(executable.parent))
         self._unfinished_launch = (process, selected_port)
+        # Record ownership before the readiness handshake: the broker's managed-session
+        # enforcement must see this PID as guard-launched, or its own probe is refused.
+        try:
+            from aedt_guard.managed import record_launch
+
+            record_launch(pid=int(process.pid), port=selected_port, version=version,
+                          non_graphical=non_graphical, source='aedt_launcher.spawn')
+        except Exception:  # noqa: BLE001 - never fail the launch on bookkeeping
+            pass
         # The launched PID is known even when psutil cannot enumerate the
         # listener owner. A port-only attach would fail on those hosts.
         target = AedtTarget("pid", int(process.pid))
@@ -206,6 +215,14 @@ class AedtLauncher:
                     if non_graphical:
                         result["non_graphical"] = True
                     self._unfinished_launch = None
+                    try:
+                        from aedt_guard.managed import record_launch
+
+                        record_launch(pid=result['pid'], port=result.get('port'),
+                                      version=version, non_graphical=non_graphical,
+                                      source='aedt_launcher')
+                    except Exception:  # noqa: BLE001 - never fail a successful launch on bookkeeping
+                        pass
                     return result
                 except Exception as exc:  # noqa: BLE001 - vendor readiness errors vary
                     # In particular, do not kill a timed-out broker: its attach

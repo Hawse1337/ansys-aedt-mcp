@@ -94,7 +94,7 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
         registered = {tool.name for tool in await mcp_server.mcp.list_tools()}
 
         self.assertTrue(expected.issubset(registered))
-        self.assertEqual(len(registered), 62)  # + v1.10: archive_query
+        self.assertEqual(len(registered), 63)  # + v1.10: archive_query, + v0.3: guard_status
 
     async def test_targeted_status_and_connect_use_explicit_target(self):
         status = await mcp_server.check_aedt_status(pid=101)

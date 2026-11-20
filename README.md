@@ -2,6 +2,21 @@
 
 This module lets MCP clients such as Codex control Ansys Electronics Desktop through PyAEDT. AEDT 2026 R1 is the default and live-tested target.
 
+## Enforcement boundary (v0.3.0)
+
+Guard-launched AEDT sessions are recorded and only those sessions can be attached through
+the guard. `guard_status` lists every live `ansysedt.exe` as managed or unmanaged, and every
+worker command is appended to an audit log. This turns a silent bypass into a visible,
+refused action:
+
+- managed-only attach (`AEDT_MCP_ALLOW_UNMANAGED=1` is a human-only escape hatch);
+- unmanaged AEDT detection in `guard_status` / `check_aedt_status`;
+- per-command audit at `<state>\guard_audit.jsonl`.
+
+The guard is still **not an OS sandbox**: a same-user shell can launch AEDT directly. Read
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) before relying on it for access control, and use
+[docs/CLIENTS.md](docs/CLIENTS.md) to wire DeepSeek Harness or Codex with the fail-closed rule.
+
 ## Architecture
 
 ```text

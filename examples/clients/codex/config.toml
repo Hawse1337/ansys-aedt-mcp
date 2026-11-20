@@ -1,0 +1,17 @@
+# Codex client configuration for the AEDT guard
+#
+# Merge this block into ~/.codex/config.toml (or a project .codex/config.toml).
+# Keep the guard reachable for every AEDT action; see docs/CLIENTS.md and docs/THREAT_MODEL.md.
+
+[mcp_servers."ansys-aedt"]
+command = 'C:\ProgramData\ansys-aedt-mcp\.venv\Scripts\python.exe'
+args = ['C:\ProgramData\ansys-aedt-mcp\mcp_server.py']
+cwd = 'C:\ProgramData\ansys-aedt-mcp'
+startup_timeout_sec = 300
+tool_timeout_sec = 2400
+
+[mcp_servers."ansys-aedt".env]
+AEDT_VERSION = '2026.1'
+AEDT_INSTALL_DIR = 'D:\ANSYS Inc\v261\AnsysEM'
+AEDT_WORKER_TIMEOUT = '1800'
+AEDT_LAUNCH_TIMEOUT = '240'

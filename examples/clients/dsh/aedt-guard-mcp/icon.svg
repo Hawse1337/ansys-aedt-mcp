@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="AEDT guard">
+  <rect width="64" height="64" rx="14" fill="#0d1117"/>
+  <g transform="translate(32 32)" fill="none" stroke-linecap="round">
+    <ellipse cx="0" cy="0" rx="20" ry="7.5" stroke="#e4572e" stroke-width="2.2"/>
+    <path d="M -20 -8 V -20 Q 0 -27 20 -20 V -8" stroke="#f4a261" stroke-width="2"/>
+    <path d="M -11 12 L 0 4 L 11 12" stroke="#2a9d8f" stroke-width="2"/>
+    <circle cx="0" cy="0" r="2.6" fill="#e4572e" stroke="none"/>
+  </g>
+</svg>

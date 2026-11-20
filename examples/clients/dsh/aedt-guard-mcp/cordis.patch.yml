@@ -1,0 +1,15 @@
+- insert:
+    - id: aedt-guard-mcp
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: aedt
+        transport: stdio
+        command: 'C:\ProgramData\ansys-aedt-mcp\.venv\Scripts\python.exe'
+        args: ['C:\ProgramData\ansys-aedt-mcp\mcp_server.py']
+        cwd: 'C:\ProgramData\ansys-aedt-mcp'
+        env:
+          AEDT_VERSION: "2026.1"
+          AEDT_INSTALL_DIR: 'D:\ANSYS Inc\v261\AnsysEM'
+          AEDT_WORKER_TIMEOUT: "1800"
+          AEDT_LAUNCH_TIMEOUT: "240"
+        failOnStartupError: true
