@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
-"""AEDT Builder Approver — small operator GUI for approved builders.
+"""AEDT Builder Approver — operator GUI for approved builders.
 
-Double-click the built .exe to review a candidate builder, compare it with the current approved
-copy, and update the allowlist hash/source path. Operator-only tool; no arbitrary code execution.
+Double-click the built .exe (or run this file) to:
+  * compare a candidate builder with the currently approved copy;
+  * see the request's platform/session metadata (sidecar next to the candidate);
+  * approve the candidate and update the allowlist atomically;
+  * edit the parameter schema (e.g. add a new enum value).
+
+Operator-only tool; it does not execute model code.
 """
 from __future__ import annotations
 
@@ -14,7 +19,6 @@ import hashlib
 import json
 import os
 import shutil
-import sys
 import tempfile
 import tkinter as tk
 from pathlib import Path
@@ -51,8 +55,56 @@ def check_builder(entry: dict) -> tuple[bool, str, str, str]:
     if not script.is_file():
         return False, str(script), expected, "(missing)"
     actual = sha256(script)
-    ok = actual == expected
-    return ok, str(script), expected, actual
+    return actual == expected, str(script), expected, actual
+
+
+def _candidate_sidecars(candidate: Path) -> list[Path]:
+    return [
+        candidate.with_name(candidate.stem + ".approval-request.json"),
+        candidate.with_name(candidate.name + ".approval-request.json"),
+        GUARD_DIR / "approval_requests" / (candidate.stem + ".json"),
+        candidate.parent / "approval-request.json",
+    ]
+
+
+def load_request_metadata(candidate: Path) -> tuple[dict | None, Path | None, bool]:
+    """Return (metadata, sidecar_path, stale_hash)."""
+    if not candidate.is_file():
+        return None, None, False
+    digest = sha256(candidate)
+    for path in _candidate_sidecars(candidate):
+        if not path.is_file():
+            continue
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(meta, dict):
+            continue
+        expected = str(meta.get("candidate_sha256", "")).lower()
+        stale = bool(expected and expected != digest)
+        return meta, path, stale
+    return None, None, False
+
+
+def format_source(meta: dict | None) -> str:
+    if not meta:
+        return "未提供来源（可点“编辑来源信息”补充）"
+    platform = str(meta.get("platform") or "未知平台")
+    session_id = str(meta.get("session_id") or "")
+    title = str(meta.get("session_title") or "")
+    parts = [platform]
+    if session_id:
+        parts.append("会话 " + session_id)
+    if title:
+        parts.append(title)
+    return " / ".join(parts)
+
+
+def request_time(meta: dict | None, candidate: Path) -> str:
+    if meta and meta.get("requested_at"):
+        return str(meta["requested_at"])
+    return datetime.datetime.fromtimestamp(candidate.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class ApproverApp:
@@ -62,16 +114,19 @@ class ApproverApp:
         self.approved_dir = approved_dir
         self.data: dict = {}
         self.current_id: str | None = None
+        self.request_meta: dict | None = None
+        self.request_meta_path: Path | None = None
+        self.request_meta_stale = False
 
         root.title("AEDT Builder Approver")
-        root.geometry("980x720")
-        root.minsize(820, 600)
+        root.geometry("1120x780")
+        root.minsize(900, 650)
 
         top = ttk.Frame(root, padding=8)
         top.pack(fill="x")
         ttk.Label(top, text="Allowlist:").pack(side="left")
         self.allowlist_var = tk.StringVar(value=str(allowlist_path))
-        ttk.Entry(top, textvariable=self.allowlist_var, width=80).pack(side="left", padx=6)
+        ttk.Entry(top, textvariable=self.allowlist_var).pack(side="left", fill="x", expand=True, padx=6)
         ttk.Button(top, text="浏览...", command=self.browse_allowlist).pack(side="left")
         ttk.Button(top, text="刷新", command=self.refresh).pack(side="left", padx=4)
         ttk.Button(top, text="打开目录", command=self.open_allowlist_dir).pack(side="left")
@@ -80,7 +135,7 @@ class ApproverApp:
         row.pack(fill="x")
         ttk.Label(row, text="Builder:").pack(side="left")
         self.builder_var = tk.StringVar()
-        self.builder_combo = ttk.Combobox(row, textvariable=self.builder_var, width=30, state="readonly")
+        self.builder_combo = ttk.Combobox(row, textvariable=self.builder_var, width=32, state="readonly")
         self.builder_combo.pack(side="left", padx=6)
         self.builder_combo.bind("<<ComboboxSelected>>", lambda _event: self.on_select())
         ttk.Button(row, text="检查状态", command=self.check_current).pack(side="left", padx=4)
@@ -93,25 +148,42 @@ class ApproverApp:
         self.detail = tk.Text(status, height=4, wrap="word", state="disabled")
         self.detail.pack(fill="x", pady=(6, 0))
 
-        candidate = ttk.LabelFrame(root, text="候选新版本（要批准的文件）", padding=8)
+        candidate = ttk.LabelFrame(root, text="候选新版本（要审核批准的文件）", padding=8)
         candidate.pack(fill="x", padx=8, pady=6)
+        path_row = ttk.Frame(candidate)
+        path_row.pack(fill="x")
+        ttk.Label(path_row, text="文件:").pack(side="left")
         self.candidate_var = tk.StringVar()
         self.candidate_var.trace_add("write", lambda *_: self._update_candidate_status())
-        ttk.Entry(candidate, textvariable=self.candidate_var).pack(side="left", fill="x", expand=True)
-        ttk.Button(candidate, text="浏览...", command=self.browse_candidate).pack(side="left", padx=4)
-        ttk.Button(candidate, text="检查候选版本", command=self.check_candidate).pack(side="left")
+        self.candidate_entry = ttk.Entry(path_row, textvariable=self.candidate_var)
+        self.candidate_entry.pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Button(path_row, text="浏览...", command=self.browse_candidate).pack(side="left")
+        ttk.Button(path_row, text="打开所在文件夹", command=self.open_candidate_dir).pack(side="left", padx=4)
+        self.full_path_var = tk.StringVar(value="完整路径：")
+        self.full_path_label = ttk.Label(
+            candidate, textvariable=self.full_path_var, foreground="#333", wraplength=1020
+        )
+        self.full_path_label.pack(fill="x", pady=(6, 0))
+        candidate.bind(
+            "<Configure>",
+            lambda event: self.full_path_label.configure(wraplength=max(200, event.width - 40)),
+        )
         self.candidate_status_var = tk.StringVar(value="（未选择候选文件）")
         ttk.Label(candidate, textvariable=self.candidate_status_var, foreground="#555").pack(
             fill="x", pady=(6, 0)
         )
-        self.request_info_var = tk.StringVar(value="（未选择候选）")
-        ttk.Label(candidate, textvariable=self.request_info_var, foreground="#555").pack(
+        self.request_info_var = tk.StringVar(value="请求来源：（未选择候选）")
+        ttk.Label(candidate, textvariable=self.request_info_var, foreground="#555", wraplength=1020).pack(
             fill="x"
         )
+        action_row = ttk.Frame(candidate)
+        action_row.pack(fill="x", pady=(6, 0))
+        ttk.Button(action_row, text="检查候选版本", command=self.check_candidate).pack(side="left")
         self.full_diff_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(candidate, text="显示完整差异（可选）", variable=self.full_diff_var).pack(
-            anchor="w", pady=(4, 0)
+        ttk.Checkbutton(action_row, text="显示完整差异（可选）", variable=self.full_diff_var).pack(
+            side="left", padx=8
         )
+        ttk.Button(action_row, text="编辑来源信息", command=self.edit_source).pack(side="left")
 
         actions = ttk.Frame(root, padding=(8, 0))
         actions.pack(fill="x")
@@ -120,11 +192,10 @@ class ApproverApp:
         ttk.Button(actions, text="打开 approved 目录", command=self.open_approved_dir).pack(side="left", padx=6)
         ttk.Button(actions, text="退出", command=root.destroy).pack(side="right")
 
-        logbox = ttk.LabelFrame(root, text="日志 / Diff", padding=8)
+        logbox = ttk.LabelFrame(root, text="检查摘要 / 日志", padding=8)
         logbox.pack(fill="both", expand=True, padx=8, pady=6)
         self.log = scrolledtext.ScrolledText(logbox, wrap="word", state="disabled")
         self.log.pack(fill="both", expand=True)
-
         self.refresh()
 
     # ---- helpers -----------------------------------------------------
@@ -146,9 +217,13 @@ class ApproverApp:
         entry = self.data.get("builders", {}).get(self.current_id)
         return entry if isinstance(entry, dict) else None
 
-    # ---- actions -----------------------------------------------------
+    def _candidate(self) -> Path | None:
+        text = self.candidate_var.get().strip()
+        return Path(text).expanduser() if text else None
+
+    # ---- paths -------------------------------------------------------
     def browse_allowlist(self) -> None:
-        path = filedialog.askopenfilename(title="选择 build allowlist", filetypes=[("JSON", "*.json"), ("All", "*.*")])
+        path = filedialog.askopenfilename(title="选择 builder allowlist", filetypes=[("JSON", "*.json"), ("All", "*.*")])
         if path:
             self.allowlist_var.set(path)
             self.allowlist_path = Path(path)
@@ -159,15 +234,20 @@ class ApproverApp:
         if path:
             self.candidate_var.set(path)
 
+    def open_candidate_dir(self) -> None:
+        candidate = self._candidate()
+        if candidate and candidate.parent.is_dir():
+            os.startfile(str(candidate.parent))  # noqa: S606
+
     def open_allowlist_dir(self) -> None:
-        target = self.allowlist_path.parent
-        if target.is_dir():
-            os.startfile(str(target))  # noqa: S606 - operator GUI action
+        if self.allowlist_path.parent.is_dir():
+            os.startfile(str(self.allowlist_path.parent))  # noqa: S606
 
     def open_approved_dir(self) -> None:
         self.approved_dir.mkdir(parents=True, exist_ok=True)
         os.startfile(str(self.approved_dir))  # noqa: S606
 
+    # ---- state -------------------------------------------------------
     def refresh(self) -> None:
         try:
             self.allowlist_path = Path(self.allowlist_var.get()).expanduser()
@@ -179,7 +259,6 @@ class ApproverApp:
                     self.current_id = ids[0]
                 self.builder_var.set(self.current_id)
                 self.on_select()
-                self._update_candidate_status()
             else:
                 self.status_var.set("allowlist 中没有 builder")
         except Exception as exc:  # noqa: BLE001
@@ -198,9 +277,7 @@ class ApproverApp:
             return
         try:
             ok, script, expected, actual = check_builder(entry)
-            self.status_var.set(
-                ("✅ 已批准副本一致" if ok else "❌ 已批准副本与 allowlist 不一致")
-            )
+            self.status_var.set("✅ 已批准副本一致" if ok else "❌ 已批准副本与 allowlist 不一致")
             self.status_label.configure(foreground="#1b7f3a" if ok else "#b00020")
             approval = entry.get("approval") if isinstance(entry, dict) else None
             approval_line = ""
@@ -225,15 +302,16 @@ class ApproverApp:
 
     def _update_candidate_status(self) -> None:
         entry = self._entry()
-        candidate = (
-            Path(self.candidate_var.get()).expanduser()
-            if self.candidate_var.get().strip()
-            else None
-        )
+        candidate = self._candidate()
         if not entry or candidate is None or not candidate.is_file():
             self.candidate_status_var.set("（未选择有效的候选文件）")
-            self.request_info_var.set("（未选择候选）")
+            self.request_info_var.set("请求来源：（未选择候选）")
+            self.full_path_var.set("完整路径：")
+            self.request_meta = None
+            self.request_meta_path = None
+            self.request_meta_stale = False
             return
+        self.full_path_var.set("完整路径：%s" % candidate)
         try:
             current_hash = str(entry.get("sha256", "")).lower()
             candidate_hash = sha256(candidate)
@@ -245,15 +323,79 @@ class ApproverApp:
                 self.candidate_status_var.set(
                     "候选已变化：当前 %s → 候选 %s" % (current_hash[:16], candidate_hash[:16])
                 )
-            requested = datetime.datetime.fromtimestamp(candidate.stat().st_mtime)
-            self.request_info_var.set(
-                "请求时间：%s    请求来源：候选文件修改（%s）"
-                % (requested.strftime("%Y-%m-%d %H:%M:%S"), candidate)
-            )
+            meta, path, stale = load_request_metadata(candidate)
+            self.request_meta, self.request_meta_path = meta, path
+            self.request_meta_stale = stale
+            source = format_source(meta)
+            line = "请求来源：%s    请求时间：%s" % (source, request_time(meta, candidate))
+            reason = str(meta.get("reason") or "") if meta else ""
+            if reason:
+                line += "\n请求说明：%s" % reason
+            if stale:
+                line += "\n⚠ 来源元数据里的 candidate_sha256 与当前候选不一致，请确认/重写来源信息"
+            self.request_info_var.set(line)
         except Exception as exc:  # noqa: BLE001
             self.candidate_status_var.set("无法读取候选文件: %s" % exc)
-            self.request_info_var.set("（无法读取候选）")
+            self.request_info_var.set("请求来源：（无法读取候选）")
 
+    # ---- metadata editor --------------------------------------------
+    def edit_source(self) -> None:
+        candidate = self._candidate()
+        if candidate is None or not candidate.is_file():
+            messagebox.showwarning("缺少候选文件", "请先选择候选脚本文件。")
+            return
+        meta = dict(self.request_meta or {})
+        meta.setdefault("platform", "DeepSeek Harness")
+        meta.setdefault("session_id", "")
+        meta.setdefault("session_title", "")
+        meta.setdefault("reason", "")
+        meta.setdefault("requested_at", request_time(None, candidate))
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("编辑请求来源 — %s" % candidate.name)
+        dialog.geometry("760x420")
+        dialog.transient(self.root)
+        fields = [
+            ("平台（如 DeepSeek Harness / Codex）", "platform"),
+            ("会话 ID", "session_id"),
+            ("会话标题", "session_title"),
+            ("请求时间", "requested_at"),
+            ("请求说明/理由", "reason"),
+        ]
+        vars_: dict[str, tk.StringVar] = {}
+        for index, (label, key) in enumerate(fields):
+            ttk.Label(dialog, text=label).grid(row=index, column=0, sticky="w", padx=8, pady=4)
+            var = tk.StringVar(value=str(meta.get(key, "")))
+            vars_[key] = var
+            if key == "reason":
+                ttk.Entry(dialog, textvariable=var).grid(row=index, column=1, sticky="ew", padx=8)
+            else:
+                ttk.Entry(dialog, textvariable=var).grid(row=index, column=1, sticky="ew", padx=8)
+        dialog.columnconfigure(1, weight=1)
+
+        def save() -> None:
+            record = {
+                "builder_id": self.current_id,
+                "platform": vars_["platform"].get().strip(),
+                "session_id": vars_["session_id"].get().strip(),
+                "session_title": vars_["session_title"].get().strip(),
+                "requested_at": vars_["requested_at"].get().strip(),
+                "reason": vars_["reason"].get().strip(),
+                "candidate": str(candidate),
+                "candidate_sha256": sha256(candidate),
+            }
+            target = candidate.with_name(candidate.stem + ".approval-request.json")
+            target.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            self._log("[source] wrote %s" % target)
+            dialog.destroy()
+            self._update_candidate_status()
+
+        buttons = ttk.Frame(dialog, padding=8)
+        buttons.grid(row=len(fields), column=0, columnspan=2, sticky="ew")
+        ttk.Button(buttons, text="保存", command=save).pack(side="left")
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="left", padx=6)
+
+    # ---- schema editor ----------------------------------------------
     def edit_schema(self) -> None:
         entry = self._entry()
         if not entry:
@@ -261,14 +403,13 @@ class ApproverApp:
             return
         dialog = tk.Toplevel(self.root)
         dialog.title("编辑参数 schema — %s" % self.current_id)
-        dialog.geometry("760x560")
+        dialog.geometry("780x580")
         dialog.transient(self.root)
-        info = ttk.Label(
+        ttk.Label(
             dialog,
-            text="修改 params JSON（例如给 feed.values 增加 \"gap\"），保存后立即更新 allowlist。",
+            text='修改 params JSON（例如给 feed.values 增加 "gap"），保存后立即更新 allowlist。',
             padding=8,
-        )
-        info.pack(fill="x")
+        ).pack(fill="x")
         editor = tk.Text(dialog, wrap="none")
         editor.pack(fill="both", expand=True, padx=8)
         editor.insert("1.0", json.dumps(entry.get("params", {}), ensure_ascii=False, indent=2))
@@ -282,13 +423,13 @@ class ApproverApp:
                     backup = self.allowlist_path.with_name(
                         self.allowlist_path.name
                         + ".bak-"
-                        + __import__("time").strftime("%Y%m%d-%H%M%S")
+                        + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
                     )
                     shutil.copy2(self.allowlist_path, backup)
                 entry["params"] = params
                 self.data["builders"][self.current_id] = entry
                 save_allowlist(self.allowlist_path, self.data)
-                self._log("[schema] %s params updated: %s" % (self.current_id, json.dumps(params, ensure_ascii=False)))
+                self._log("[schema] %s params updated" % self.current_id)
                 messagebox.showinfo("已保存", "参数 schema 已更新。")
                 dialog.destroy()
                 self.refresh()
@@ -300,25 +441,21 @@ class ApproverApp:
         ttk.Button(buttons, text="保存", command=save).pack(side="left")
         ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="left", padx=6)
 
+    # ---- candidate check -------------------------------------------
     def check_candidate(self) -> None:
         entry = self._entry()
-        candidate = Path(self.candidate_var.get()).expanduser()
-        if not entry or not candidate.is_file():
+        candidate = self._candidate()
+        if not entry or candidate is None or not candidate.is_file():
             messagebox.showwarning("缺少文件", "请先选择 builder 和候选脚本文件。")
             return
         current = Path(str(entry.get("script", "")))
-        before = (
-            current.read_text(encoding="utf-8", errors="replace").splitlines()
-            if current.is_file()
-            else []
-        )
+        before = current.read_text(encoding="utf-8", errors="replace").splitlines() if current.is_file() else []
         after = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
-        requested = datetime.datetime.fromtimestamp(candidate.stat().st_mtime)
         current_hash = str(entry.get("sha256", "")).lower()
         candidate_hash = sha256(candidate)
         matcher = difflib.SequenceMatcher(None, before, after)
         added = removed = blocks = 0
-        changes = []
+        changes: list[str] = []
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
             if tag == "equal":
                 continue
@@ -329,12 +466,13 @@ class ApproverApp:
                 changes.append("+ " + line.strip()[:140])
             for line in before[i1:i2][:3]:
                 changes.append("- " + line.strip()[:140])
-        self._log("\n=== 差异摘要（默认精简）===")
+        source = format_source(self.request_meta)
+        self._log("\n=== 候选检查摘要（默认精简）===")
         self._log("builder: %s" % self.current_id)
-        self._log("当前已批准: %s  (%d 行, sha256 %s)" % (current, len(before), current_hash[:16]))
-        self._log("候选新版本: %s  (%d 行, sha256 %s)" % (candidate, len(after), candidate_hash[:16]))
-        self._log("请求时间: %s" % requested.strftime("%Y-%m-%d %H:%M:%S"))
-        self._log("请求来源: 候选文件修改（%s）" % candidate)
+        self._log("当前已批准: %s（%d 行, sha256 %s）" % (current, len(before), current_hash[:16]))
+        self._log("候选新版本: %s（%d 行, sha256 %s）" % (candidate, len(after), candidate_hash[:16]))
+        self._log("请求来源: %s" % source)
+        self._log("请求时间: %s" % request_time(self.request_meta, candidate))
         self._log("变更: 新增 +%d 行 / 删除 -%d 行 / 变更块 %d 处" % (added, removed, blocks))
         if changes:
             self._log("\n关键变更行（最多前 12 条）:")
@@ -342,42 +480,35 @@ class ApproverApp:
                 self._log(line)
         if self.full_diff_var.get():
             diff = list(
-                difflib.unified_diff(
-                    before, after, fromfile=str(current), tofile=str(candidate), lineterm=""
-                )
+                difflib.unified_diff(before, after, fromfile=str(current), tofile=str(candidate), lineterm="")
             )
-            self._log("\n=== 完整 diff（最多显示 2000 行）===")
+            self._log("\n=== 完整差异（最多显示 2000 行）===")
             self._log("\n".join(diff[:2000]) if diff else "(无文本差异)")
         else:
-            self._log(
-                "\n（默认只看摘要；需要全文请勾选“显示完整差异（可选）”后再点“检查候选版本”）"
-            )
+            self._log("\n（默认只看摘要；需要全文请勾选“显示完整差异（可选）”后再点“检查候选版本”）")
         self._log(
             "\n检查清单：几何/边界/端口、是否删除工程、是否额外启动 AEDT、输出路径是否越界。\n"
             "确认无误后点击“批准并更新 allowlist”。"
         )
 
+    # ---- approval ----------------------------------------------------
     def apply_approval(self) -> None:
         entry = self._entry()
-        candidate = Path(self.candidate_var.get()).expanduser()
-        if not entry or not candidate.is_file():
+        candidate = self._candidate()
+        if not entry or candidate is None or not candidate.is_file():
             messagebox.showwarning("缺少文件", "请先选择 builder 和候选脚本文件。")
             return
-        requested = datetime.datetime.fromtimestamp(candidate.stat().st_mtime)
-        requested_time = requested.strftime("%Y-%m-%d %H:%M:%S")
-        requested_source = "候选文件修改（%s）" % candidate
+        source = format_source(self.request_meta)
+        requested_at = request_time(self.request_meta, candidate)
+        reason = str(self.request_meta.get("reason") or "") if self.request_meta else ""
         old_hash = str(entry.get("sha256", "")).lower()
         new_hash = sha256(candidate)
-        if not messagebox.askyesno(
-            "确认批准",
+        message = (
             "确认已完成人工 review，并批准新的 builder 版本？\n\n"
-            "Builder: %s\n"
-            "请求时间: %s\n"
-            "请求来源: %s\n"
-            "当前 hash: %s\n"
-            "候选 hash: %s"
-            % (self.current_id, requested_time, requested_source, old_hash, new_hash),
-        ):
+            "Builder: %s\n请求来源: %s\n请求时间: %s\n请求说明: %s\n当前 hash: %s\n候选 hash: %s"
+            % (self.current_id, source, requested_at, reason or "(未填写)", old_hash, new_hash)
+        )
+        if not messagebox.askyesno("确认批准", message):
             return
         try:
             self.approved_dir.mkdir(parents=True, exist_ok=True)
@@ -386,7 +517,7 @@ class ApproverApp:
                 backup = self.allowlist_path.with_name(
                     self.allowlist_path.name
                     + ".bak-"
-                    + __import__("time").strftime("%Y%m%d-%H%M%S")
+                    + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
                 )
                 shutil.copy2(self.allowlist_path, backup)
             shutil.copy2(candidate, target)
@@ -394,25 +525,28 @@ class ApproverApp:
             approved_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             entry["script"] = str(target.resolve())
             entry["sha256"] = digest
-            entry["approval"] = {
-                "requested_at": requested_time,
-                "requested_source": requested_source,
-                "approved_at": approved_at,
-                "approved_by": getpass.getuser(),
-                "previous_sha256": old_hash,
-                "approved_sha256": digest,
-            }
+            meta = dict(self.request_meta or {})
+            meta.update(
+                {
+                    "requested_at": requested_at,
+                    "requested_source": source,
+                    "approved_at": approved_at,
+                    "approved_by": getpass.getuser(),
+                    "previous_sha256": old_hash,
+                    "approved_sha256": digest,
+                }
+            )
+            entry["approval"] = meta
             self.data["builders"][self.current_id] = entry
             save_allowlist(self.allowlist_path, self.data)
             self._log(
-                "[apply] %s\n  请求时间: %s\n  请求来源: %s\n  approved: %s\n  sha256: %s"
-                % (self.current_id, requested_time, requested_source, target.resolve(), digest)
+                "[apply] %s\n  请求来源: %s\n  请求时间: %s\n  approved: %s\n  sha256: %s"
+                % (self.current_id, source, requested_at, target.resolve(), digest)
             )
             messagebox.showinfo(
                 "已批准",
-                "已更新 allowlist 和 approved 副本。\n\n"
-                "请求时间: %s\n请求来源: %s\n批准时间: %s\nsha256: %s"
-                % (requested_time, requested_source, approved_at, digest),
+                "已更新 allowlist 和 approved 副本。\n\n请求来源: %s\n请求时间: %s\n批准时间: %s\nsha256: %s"
+                % (source, requested_at, approved_at, digest),
             )
             self.refresh()
         except Exception as exc:  # noqa: BLE001
@@ -455,10 +589,13 @@ def main() -> int:
     if args.self_test:
         code = self_test(Path(args.allowlist))
         if args.report:
-            # executable is windowed; write a report for automated verification
             try:
                 allow = load_allowlist(Path(args.allowlist))
-                payload = {"allowlist": args.allowlist, "builders": sorted(allow.get("builders", {})), "exit": code}
+                payload = {
+                    "allowlist": args.allowlist,
+                    "builders": sorted(allow.get("builders", {})),
+                    "exit": code,
+                }
                 Path(args.report).write_text(json.dumps(payload, indent=2), encoding="utf-8")
             except Exception:  # noqa: BLE001
                 pass

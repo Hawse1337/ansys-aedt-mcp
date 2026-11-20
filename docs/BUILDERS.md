@@ -81,6 +81,15 @@ The GUI recomputes the SHA-256, copies the candidate to
 `C:\ProgramData\ansys-aedt-mcp\approved\<builder>.py`, backs up the allowlist, and updates it
 atomically. The CLI (`tools/approve_builder.py`) remains available for automation.
 
+## GUI v4 request metadata
+
+The candidate file path is now a full-width editable field plus a wrapping full-path line.
+Request source is read from a sidecar next to the candidate:
+`<candidate>.approval-request.json` (or `approval_requests/<stem>.json`). It should contain
+`platform`, `session_id`, `session_title`, `requested_at`, `reason` and `candidate_sha256`.
+Agents can write it with `tools/request_builder_approval.py`; the GUI also offers an
+"Edit source" dialog. The approval record stores this metadata plus the candidate hash.
+
 ## GUI v3 notes
 
 - The candidate action is labelled **Check candidate version** (not "view diff").
