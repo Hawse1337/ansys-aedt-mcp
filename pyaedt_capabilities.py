@@ -499,17 +499,22 @@ class OfficialCapabilities:
                 pid_create_time = float(psutil.Process(pid).create_time())
             except Exception:  # noqa: BLE001 - process may already be gone
                 pid_create_time = None
-        released = bool(
-            desktop.release_desktop(
-                close_projects=close_projects,
-                close_on_exit=close_desktop,
+        release_error: str | None = None
+        try:
+            released = bool(
+                desktop.release_desktop(
+                    close_projects=close_projects,
+                    close_on_exit=close_desktop,
+                )
             )
-        )
+        except Exception as exc:  # noqa: BLE001 - report the failure, do not crash the tool
+            released = False
+            release_error = repr(exc)[:300]
         self.clear_local_state()
         exited: bool | None = None
         forced = False
         pid_reused = False
-        if close_desktop and isinstance(pid, int) and pid > 0:
+        if release_error is None and close_desktop and isinstance(pid, int) and pid > 0:
             import psutil
             import time
 
@@ -553,10 +558,13 @@ class OfficialCapabilities:
             "disconnected": True,
             "release_result": released,
             "closed_projects": close_projects,
-            "closed_desktop": bool(exited) if close_desktop else False,
-            "process_alive": (not exited) if close_desktop and exited is not None else None,
+            "closed_desktop": bool(exited) if close_desktop and release_error is None else False,
+            "process_alive": (
+                (not exited) if close_desktop and exited is not None else None
+            ),
             "forced_termination": forced,
             "pid_reused": pid_reused,
+            "release_error": release_error,
             "pid": pid,
         }
 

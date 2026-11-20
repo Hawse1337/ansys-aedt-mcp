@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+**Same-version release rebuild (2026-11-21).** The v0.3.2 wheel/sdist/source assets were rebuilt
+from this commit (still 0.3.2; no new tag) so installers contain the follow-up fixes: PID->port
+attach with version pinning, guarded HFSS app factory, realistic project APIs, truthful close
+(\`pid_reused\` / \`release_error\`), per-consumer project normalization and \`clear_stale_lock\` audit.
+Test suite at rebuild time: **481 passed, 1 skipped, 118 subtests**.
+
 - **Audit follow-ups.** Restored version pinning on attach (version+port; the vendor bug only
   occurs with version+PID), guarded the HFSS app factory with the attach-only wrapper, use the
   realistic PyAEDT Desktop project APIs (ctive_project_name/project_path), normalize project
@@ -9,7 +15,7 @@
   drop stale project tracking on close_projects, and audit clear_stale_lock deletions.
 - Close verification requires a pre-release identity snapshot and process name before any
   force-kill; recycled or unverified PIDs are never terminated.
-- Added 	ests/test_close_verification.py; suite is 477 passed, 1 skipped, 118 subtests.
+- Added 	ests/test_close_verification.py; suite is 481 passed, 1 skipped, 118 subtests.
 Follow-up fixes from the second real-agent session (kept on 0.3.2; no new release was cut).
 
 - **PID-target attach.** PyAEDT 1.10.0 rejects `version` + `aedt_process_id` together with a
@@ -26,7 +32,7 @@ Follow-up fixes from the second real-agent session (kept on 0.3.2; no new releas
   `forced_termination` and the PID instead of echoing the request.
 - **PID-reuse safety.** Close verification records the AEDT process creation time and will
   not terminate a process that merely reused the same PID after AEDT exited.
-- Regression tests in `tests/test_guard_followups.py` (469+5 tests).
+- Regression tests in `tests/test_guard_followups.py` (481 tests).
 
 ## 0.3.2 - 2026-11-20
 
