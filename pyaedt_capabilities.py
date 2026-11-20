@@ -490,6 +490,7 @@ class OfficialCapabilities:
     def _disconnect_from_aedt(self, desktop, target, arguments, connection_kwargs):
         close_projects = _boolean(arguments, "close_projects", False)
         close_desktop = _boolean(arguments, "close_desktop", False)
+        pid = getattr(desktop, "aedt_process_id", None)
         released = bool(
             desktop.release_desktop(
                 close_projects=close_projects,
@@ -497,12 +498,43 @@ class OfficialCapabilities:
             )
         )
         self.clear_local_state()
+        exited: bool | None = None
+        forced = False
+        if close_desktop and isinstance(pid, int) and pid > 0:
+            import psutil
+            import time
+
+            exited = False
+            for _ in range(40):
+                if not psutil.pid_exists(pid):
+                    exited = True
+                    break
+                time.sleep(0.25)
+            if not exited:
+                try:
+                    process = psutil.Process(pid)
+                    process.terminate()
+                    for _ in range(20):
+                        if not psutil.pid_exists(pid):
+                            exited = True
+                            break
+                        time.sleep(0.25)
+                    if not exited:
+                        process.kill()
+                        time.sleep(1.0)
+                        exited = not psutil.pid_exists(pid)
+                    forced = True
+                except Exception:  # noqa: BLE001 - report the truth below
+                    exited = not psutil.pid_exists(pid)
         return {
             "target": self._target(target),
             "disconnected": True,
             "release_result": released,
             "closed_projects": close_projects,
-            "closed_desktop": close_desktop,
+            "closed_desktop": bool(exited) if close_desktop else False,
+            "process_alive": (not exited) if close_desktop and exited is not None else None,
+            "forced_termination": forced,
+            "pid": pid,
         }
 
     def _list_projects(self, desktop, target, arguments, connection_kwargs):

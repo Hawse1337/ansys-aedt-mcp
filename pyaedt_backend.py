@@ -302,7 +302,19 @@ def _default_desktop_factory(**kwargs: Any) -> Any:
         expected_port = kwargs.get("port") or configured_port
         if kwargs.get("port") and configured_port is not None and kwargs["port"] != configured_port:
             raise BackendCommandError("requested gRPC port differs from the verified process's launch argument")
+        if expected_port is None and kwargs.get("aedt_process_id"):
+            raise BackendCommandError(
+                "PID %s has no discoverable gRPC port; attach by the verified gRPC port instead "
+                "(guard launches always record one)" % expected_pid
+            )
         vendor_kwargs = dict(kwargs)
+        if expected_port is not None:
+            # PyAEDT 1.10 rejects version+PID together (and PID-only needs a version). Attaching
+            # by the verified gRPC port avoids both failure modes; the PID is still verified above
+            # and below, and _attach_only_desktop keeps the session explicit.
+            vendor_kwargs.pop("aedt_process_id", None)
+            vendor_kwargs["port"] = expected_port
+            vendor_kwargs["machine"] = vendor_kwargs.get("machine") or "localhost"
         if configured_port is not None:
             vendor_kwargs["non_graphical"] = actual_non_graphical
         module = _audited_desktop_module()
@@ -432,6 +444,7 @@ class PyAedtBackend:
         self._desktop: Any = None
         self._bound_target: AedtTarget | None = None
         self._apps: dict[tuple[str, str, str | None], Any] = {}
+        self._project_paths: dict[str, str] = {}
         self._lock = threading.RLock()
 
     def execute(
@@ -475,6 +488,7 @@ class PyAedtBackend:
                 raise BackendCommandError(str(exc)) from exc
         if command in OFFICIAL_BACKEND_COMMANDS:
             desktop = self._desktop_for(target)
+            arguments = self._normalize_arguments(desktop, arguments, prefer_name=True)
             try:
                 result = self._official.execute(
                     command,
@@ -487,10 +501,15 @@ class PyAedtBackend:
                 )
             except CapabilityError as exc:
                 raise BackendCommandError(str(exc)) from exc
+            if command == "open_project" and isinstance(result, Mapping):
+                opened_path = result.get("project_path")
+                if isinstance(opened_path, str) and opened_path.lower().endswith((".aedt", ".aedb")):
+                    self._project_paths[Path(opened_path).stem.lower()] = opened_path
             if command == "disconnect_from_aedt":
                 self._apps.clear()
                 self._desktop = None
                 self._bound_target = None
+                self._project_paths.clear()
             return result
         if command in _DESKTOP_COMMANDS:
             result = self._execute_desktop(target, command, arguments)
@@ -546,6 +565,61 @@ class PyAedtBackend:
             )
         return self._desktop
 
+    @staticmethod
+    def _desktop_project_file(desktop: Any) -> str | None:
+        value = getattr(desktop, "project_file", None)
+        if isinstance(value, (str, Path)) and str(value).lower().endswith((".aedt", ".aedb")):
+            return str(value)
+        return None
+
+    def _resolve_project_argument(self, desktop: Any, value: Any, *, prefer_name: bool = False) -> Any:
+        """Map a bare/relative project name to what the next consumer needs.
+
+        - ``prefer_name=True`` (get_pyaedt_app / desktop handlers): return the open project's
+          *name*; PyAEDT's app resolver rejects an absolute path with
+          "project ... doesn't exist in current desktop".
+        - default (app factory / project guard): return the absolute path of the open project,
+          because the project guard refuses bare names it cannot find in its search roots.
+        """
+        if value is None or value == "":
+            return value
+        text = str(value)
+        lowered = text.lower()
+        if lowered.endswith((".aedt", ".aedb")) or "/" in text or "\\" in text:
+            path = Path(text).expanduser()
+            if path.is_file():
+                resolved = str(path.resolve())
+                self._project_paths.setdefault(path.stem.lower(), resolved)
+                return path.stem if prefer_name else resolved
+            return text
+        key = text.lower()
+        if key in self._project_paths:
+            return Path(self._project_paths[key]).stem if prefer_name else self._project_paths[key]
+        active = getattr(desktop, "active_project", None)
+        active = active() if callable(active) else active
+        if isinstance(active, str) and active.lower() == key:
+            project_file = self._desktop_project_file(desktop)
+            if project_file:
+                self._project_paths[key] = project_file
+                return Path(project_file).stem if prefer_name else project_file
+        project_file = self._desktop_project_file(desktop)
+        if project_file and Path(project_file).stem.lower() == key:
+            self._project_paths[key] = project_file
+            return Path(project_file).stem if prefer_name else project_file
+        return text
+
+    def _normalize_arguments(
+        self, desktop: Any, arguments: Mapping[str, Any] | None, *, prefer_name: bool = False
+    ) -> dict[str, Any]:
+        if not isinstance(arguments, Mapping):
+            return {}
+        normalized = dict(arguments)
+        if "project_name" in normalized:
+            normalized["project_name"] = self._resolve_project_argument(
+                desktop, normalized.get("project_name"), prefer_name=prefer_name
+            )
+        return normalized
+
     def _target_matches(self, target: AedtTarget) -> bool:
         if target == self._bound_target:
             return True
@@ -554,14 +628,28 @@ class PyAedtBackend:
         return getattr(self._desktop, "port", None) == target.value
 
     def _connection_kwargs(self, target: AedtTarget) -> dict[str, Any]:
+        # Attach-only: the running desktop is already verified, and PyAEDT's
+        # `version`+PID validation raises a spurious
+        # "version ... doesn't correspond to the pid" error on some AEDT builds.
+        # Let PyAEDT discover the version from the targeted session instead.
         kwargs: dict[str, Any] = {
-            "version": self._version,
             "non_graphical": False,
             "new_desktop": False,
             "close_on_exit": False,
         }
+        port: int | None = None
         if target.kind == "pid":
-            kwargs["aedt_process_id"] = target.value
+            desktop = self._desktop
+            if (
+                desktop is not None
+                and getattr(desktop, "aedt_process_id", None) == target.value
+                and isinstance(getattr(desktop, "port", None), int)
+            ):
+                port = int(desktop.port)
+            if port is not None:
+                kwargs.update({"machine": "localhost", "port": port})
+            else:
+                kwargs["aedt_process_id"] = target.value
         else:
             kwargs.update({"machine": "localhost", "port": target.value})
         return kwargs
@@ -609,6 +697,7 @@ class PyAedtBackend:
             project_name = _required_text(arguments, "project_name")
             design_name = _required_text(arguments, "design_name")
         self._desktop_for(target)
+        project_name = self._resolve_project_argument(self._desktop, project_name)
         kwargs = self._connection_kwargs(self._bound_target or target)
         kwargs.update({"project": project_name, "design": design_name})
 

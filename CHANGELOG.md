@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Follow-up fixes from the second real-agent session (kept on 0.3.2; no new release was cut).
+
+- **PID-target attach.** PyAEDT 1.10.0 rejects `version` + `aedt_process_id` together with a
+  spurious "version ... doesn't correspond to the pid" error, while PID-only attach needs a
+  version. The broker now verifies the PID and attaches through the process's recorded gRPC port;
+  a PID without a discoverable gRPC port is refused with a clear message instead of hitting the
+  vendor bug. Subsequent app construction uses the port.
+- **Open-project path/name resolution.** Tools now track the absolute path of projects opened via
+  `open_project`, so `validate_design`, `analysis_status`, `export_config` and friends accept a
+  project name or an absolute path for an already-open project regardless of its directory (the
+  project guard's search roots otherwise only cover the process working directory).
+- **Truthful close.** `disconnect_from_aedt(close_desktop=true)` now waits for the verified PID,
+  force-terminates after a grace period, and returns `closed_desktop`, `process_alive`,
+  `forced_termination` and the PID instead of echoing the request.
+- Regression tests in `tests/test_guard_followups.py` (469+5 tests).
+
 ## 0.3.2 - 2026-11-20
 
 Follow-up from the round-2 adversarial re-review (client consistency + regressions):
