@@ -224,7 +224,8 @@ def record_launch(
         "recorded_monotonic": time.monotonic(),
     }
     with _locked():
-        records = [existing for existing in _read() if existing.get("pid") != record["pid"]]
+        records = [existing for existing in _read()
+                   if existing.get("pid") != record["pid"] and _is_alive(existing)]
         records.append(record)
         _write(records)
     return record

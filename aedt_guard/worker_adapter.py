@@ -57,12 +57,29 @@ class GuardedAdapter:
         self.client = client
 
     def _call(self, command: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        from aedt_guard.audit import append_state_audit
+
         target = _target(self.pid, self.port)
-        result = (self.client or _default_client()).execute(
-            target, command, arguments, timeout=self.worker_timeout
-        )
+        base = {
+            "command": command,
+            "pid": self.pid,
+            "port": self.port,
+            "source": "guarded_adapter",
+            "at_utc": __import__("datetime").datetime.now(
+                __import__("datetime").timezone.utc).isoformat(),
+        }
+        try:
+            result = (self.client or _default_client()).execute(
+                target, command, arguments, timeout=self.worker_timeout
+            )
+        except Exception as exc:  # noqa: BLE001 - audited then re-raised
+            append_state_audit({**base, "allowed": False,
+                                "detail": "%s: %s" % (type(exc).__name__, exc)})
+            raise
         if not isinstance(result, dict):
+            append_state_audit({**base, "allowed": False, "detail": "non-object result"})
             raise TypeError(f"AEDT worker command {command} returned a non-object result")
+        append_state_audit({**base, "allowed": True})
         return result
 
     def preflight(self) -> dict[str, Any]:
@@ -177,6 +194,7 @@ class GuardedAdapter:
                 "design_name": self.design_name,
                 "setup_name": setup_name,
                 "save_before_solve": False,
+                **({"run_token": self.run_token} if self.run_token else {}),
                 **({
                     key: value
                     for key, value in (self.solver_settings.get("effective") or {}).items()

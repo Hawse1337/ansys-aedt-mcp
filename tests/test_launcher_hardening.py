@@ -1,5 +1,7 @@
 """Offline regression tests: no AEDT, COM, gRPC or real processes are started."""
 import os
+
+import aedt_launcher
 import tempfile
 import sys
 from pathlib import Path
@@ -16,6 +18,11 @@ class LauncherRegressionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.install = Path(self.temp.name)
+        self._roots = patch.object(
+            aedt_launcher, "_trusted_aedt_roots", return_value=[self.install.resolve()]
+        )
+        self._roots.start()
+        self.addCleanup(self._roots.stop)
         (self.install / 'ansysedt.exe').write_bytes(b'not executable')
         self.process = Mock(pid=12345)
         self.process.poll.return_value = None

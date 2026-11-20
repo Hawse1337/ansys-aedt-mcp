@@ -329,6 +329,31 @@ def _default_hfss_factory(**kwargs: Any) -> Any:
     return Hfss(**kwargs)
 
 
+def _assert_app_on_verified_desktop(app: Any, desktop: Any) -> None:
+    """Fail closed when a vendor app object escaped the verified AEDT session."""
+    expected_pid = getattr(desktop, "aedt_process_id", None)
+    expected_port = getattr(desktop, "port", None)
+    session = getattr(app, "desktop_class", None)
+    if session is None:
+        # Fake/test app objects do not expose a desktop session; a real PyAEDT app does.
+        return
+    actual_pid = getattr(session, "aedt_process_id", None)
+    actual_port = getattr(session, "port", None)
+    if isinstance(expected_pid, int) and expected_pid > 0:
+        if not isinstance(actual_pid, int) or actual_pid != expected_pid:
+            raise BackendCommandError(
+                "PyAEDT app object does not belong to the verified AEDT session "
+                "(expected PID %s, app PID %r); a vendor fallback launch may have occurred"
+                % (expected_pid, actual_pid)
+            )
+    if isinstance(expected_port, int) and expected_port > 0:
+        if isinstance(actual_port, int) and actual_port > 0 and actual_port != expected_port:
+            raise BackendCommandError(
+                "PyAEDT app object is bound to a different gRPC port (expected %s, app %s)"
+                % (expected_port, actual_port)
+            )
+
+
 def _default_wr90_builder(app: Any, output_dir: str, solve: bool) -> dict[str, Any]:
     from wr90_case import build_wr90_case
 
@@ -433,7 +458,7 @@ class PyAedtBackend:
             if not allowed:
                 raise BackendCommandError(
                     "E_ARBITRARY_CODE_DISABLED: arbitrary broker code is disabled by default; "
-                    "use dedicated tools or set AEDT_MCP_ALLOW_ARBITRARY_CODE=1 for a supervised session"
+                    "use dedicated tools; a human operator can enable this for a supervised session"
                 )
         if arguments is None:
             arguments = {}
@@ -613,6 +638,7 @@ class PyAedtBackend:
         app = self._apps.get(app_key)
         if app is None:
             app = self._hfss_factory(**kwargs)
+            _assert_app_on_verified_desktop(app, self._desktop)
             self._apps[app_key] = app
         if command == "build_wr90_waveguide":
             result = self._wr90_builder(app, output_dir, solve)

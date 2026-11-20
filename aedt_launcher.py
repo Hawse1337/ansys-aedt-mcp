@@ -78,9 +78,6 @@ def resolve_aedt_executable(
         )
         if executable.is_file():
             resolved = executable.resolve()
-            if (os.environ.get('AEDT_MCP_TEST_ALLOW_ANY_INSTALL_DIR') == '1'
-                    and 'pytest' in sys.modules):
-                return resolved
             if trusted_roots and not any(
                 root == resolved.parent or root in resolved.parents for root in trusted_roots
             ):

@@ -20,7 +20,7 @@ security boundary it is not.
   process can start `ansysedt.exe`, import PyAEDT and drive AEDT directly. No Python-level guard can
   prevent that; only OS isolation can.
 
-## Controls (v0.3.0)
+## Controls (v0.3.2)
 
 | control | behaviour |
 |---|---|
@@ -55,7 +55,9 @@ State location: `%LOCALAPPDATA%\ansys-aedt-mcp` (override with `AEDT_MCP_STATE_D
 
 - **Fail closed:** if the guard MCP tools are not available in the session, do not fall back to
   direct PyAEDT or `ansysedt.exe`; stop and ask the user to enable the guard.
-- Treat `AEDT_MCP_ALLOW_UNMANAGED=1` as a human decision, never set it inside an automated loop.
+- Treat every guard escape variable (`AEDT_MCP_ALLOW_UNMANAGED`, `AEDT_ALLOW_UNGUARDED`,
+  `AEDT_MCP_ALLOW_ARBITRARY_CODE`, `AEDT_GUARD_ALLOW_CREATE`, `AEDT_GUARD_ATTACH_OPEN`,
+  `AEDT_GUARD_SEARCH_DIRS`) as a human decision, never set one inside an automated loop.
 - Report `guard_status` (managed/unmanaged sessions) before claiming a session is trustworthy.
 
 See `docs/CLIENTS.md` for concrete DSH and Codex configuration.

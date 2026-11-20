@@ -43,6 +43,21 @@ def _campaign_dir(arguments: dict[str, Any] | None) -> Path | None:
     return None
 
 
+def append_state_audit(entry: dict[str, Any]) -> None:
+    """Append one line to the guard-wide command audit (best effort)."""
+    try:
+        from .managed import state_dir
+
+        target = state_dir() / "guard_audit.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:  # noqa: BLE001 - audit must not break the command
+        pass
+
+
 def append_audit(campaign_dir: Path, entry: dict[str, Any]) -> None:
     target = Path(campaign_dir) / AUDIT_RELATIVE
     target.parent.mkdir(parents=True, exist_ok=True)

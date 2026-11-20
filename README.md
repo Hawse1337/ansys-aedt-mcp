@@ -2,11 +2,11 @@
 
 This module lets MCP clients such as Codex control Ansys Electronics Desktop through PyAEDT. AEDT 2026 R1 is the default and live-tested target.
 
-## Enforcement boundary (v0.3.0)
+## Enforcement boundary (v0.3.2)
 
 Guard-launched AEDT sessions are recorded and only those sessions can be attached through
 the guard. `guard_status` lists every live `ansysedt.exe` as managed or unmanaged, and every
-worker command is appended to an audit log. This turns a silent bypass into a visible,
+MCP worker call is appended to a best-effort audit log. This turns a silent bypass into a visible,
 refused action:
 
 - managed-only attach (`AEDT_MCP_ALLOW_UNMANAGED=1` is a human-only escape hatch);
@@ -122,7 +122,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\remove_legacy
 ## Verification
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m pytest tests -q
 .\scripts\run_live_acceptance.ps1 -Mode both
 ```
 

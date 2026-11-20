@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.2 - 2026-11-20
+
+Follow-up from the round-2 adversarial re-review (client consistency + regressions):
+
+- WR90: `build_wr90_waveguide` accepts `run_token` so it can be used under
+  `AEDT_GUARD_ENFORCE=1`; the extra guarded-run setups now carry the run token.
+- Guarded-run adapter commands (`preflight_design`, `finalize_solve`, `export_*`, …) are appended to
+  the guard-wide audit log; launch is audited only after its bookkeeping result is known.
+- PyAEDT app objects are identity-checked against the verified desktop after construction
+  (`desktop_class.aedt_process_id`/`port`), closing the vendor-fallback path for `create_design`.
+- Managed registry prunes dead records on new launches; the launcher test seam was removed
+  (tests patch `_trusted_aedt_roots` explicitly instead).
+- Client docs consistency: Codex TOML snippet now contains `required` / approval mode / disabled
+  tools; shipped AGENTS examples match the live six-variable never-set policy; DSH DETAIL and
+  skill text no longer claim flat `enforcement` or "every worker command"; test command corrected to
+  `python -m pytest tests -q`.
+- Suite: 468 passed, 1 skipped.
+
 ## 0.3.1 - 2026-11-20
 
 Hardening after an adversarial review of 0.3.0 (three independent reviewers):

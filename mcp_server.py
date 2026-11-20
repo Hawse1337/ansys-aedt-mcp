@@ -159,6 +159,10 @@ def _audit_worker_call(
             "allowed": outcome == "allowed",
             "outcome": outcome,
             "arguments_sha256": digest,
+            "enforcement_enabled": os.environ.get("AEDT_GUARD_ENFORCE", "").strip().lower()
+            in {"1", "true", "yes", "on"},
+            "allow_unmanaged": managed_sessions.allow_unmanaged(),
+            "arbitrary_code_allowed": _arbitrary_code_allowed(),
             "detail": str(detail)[:500],
         }
         target = managed_sessions.state_dir() / GUARD_AUDIT_NAME
@@ -315,9 +319,6 @@ async def launch_aedt(
         _audit_worker_call("launch_aedt", pid=None, port=port, arguments={},
                            outcome="refused", detail="%s: %s" % (type(exc).__name__, exc))
         raise
-    _audit_worker_call("launch_aedt", pid=int(result.get("pid") or 0) or None,
-                       port=int(result.get("port") or 0) or None, arguments={},
-                       outcome="allowed")
     managed_ok = False
     try:
         managed_sessions.record_launch(
@@ -333,6 +334,10 @@ async def launch_aedt(
         managed_ok = False
     result["launched"] = True
     result["managed"] = managed_ok
+    _audit_worker_call("launch_aedt", pid=int(result.get("pid") or 0) or None,
+                       port=int(result.get("port") or 0) or None, arguments={},
+                       outcome="allowed" if managed_ok else "failed",
+                       detail="managed" if managed_ok else "bookkeeping failed")
     if application:
         result["application"] = await _worker_call(
             "create_design",
@@ -969,6 +974,7 @@ async def build_wr90_waveguide(
     design_name: str = "WR90_TE10",
     output_dir: str = "",
     solve: bool = True,
+    run_token: str | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Build, validate, solve, and export a classic WR-90 TE10 HFSS case."""
@@ -985,6 +991,7 @@ async def build_wr90_waveguide(
             "solution_type": "DrivenModal",
             "output_dir": destination,
             "solve": solve,
+            **({"run_token": run_token} if run_token else {}),
         },
         timeout=timeout if timeout is not None else 1800.0,
     )

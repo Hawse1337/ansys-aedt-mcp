@@ -10,7 +10,7 @@ server name `aedt`. Tools appear as `mcp__aedt__<tool>`, for example:
 - `mcp__aedt__connect_to_aedt`
 
 The guard records guard-launched AEDT sessions and refuses attach to unmanaged PIDs/ports
-(`AEDT_MCP_ALLOW_UNMANAGED=1` is a human-only escape hatch). Every worker command is appended to
+(`AEDT_MCP_ALLOW_UNMANAGED=1` is a human-only escape hatch). MCP worker calls are appended to a best-effort
 `<state>/guard_audit.jsonl`.
 
 ## Fail-closed rule for the agent
@@ -22,7 +22,7 @@ If `mcp__aedt__*` tools are missing, the agent must stop: no `ansysedt.exe`, no 
 
 1. Start a new session.
 2. `mcp__aedt__check_aedt_installed`
-3. `mcp__aedt__guard_status` → `enforcement: managed_only`
+3. `mcp__aedt__guard_status` → check `scan.enforcement == "managed_only"`
 4. `mcp__aedt__launch_aedt` → `managed: true`
 
 See the guard repository `docs/CLIENTS.md` and `docs/THREAT_MODEL.md` for the full contract.

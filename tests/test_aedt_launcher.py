@@ -1,4 +1,6 @@
 import os
+
+import aedt_launcher
 from pathlib import Path
 import tempfile
 import unittest
@@ -63,6 +65,11 @@ class AedtLauncherTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.install = Path(self.temp.name).resolve()
+        self._roots = patch.object(
+            aedt_launcher, "_trusted_aedt_roots", return_value=[self.install.resolve()]
+        )
+        self._roots.start()
+        self.addCleanup(self._roots.stop)
         self.executable = self.install / "ansysedt.exe"
         self.executable.write_bytes(b"fake")
         self.process = FakeProcess()
