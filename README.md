@@ -1,6 +1,16 @@
 # Ansys AEDT MCP
 
-This module lets MCP clients such as Codex control Ansys Electronics Desktop through PyAEDT. AEDT 2026 R1 is the default and live-tested target.
+<p>
+  <a href="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/Hawse1337/ansys-aedt-mcp/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/Hawse1337/ansys-aedt-mcp?color=e4572e"></a>
+  <a href="LICENSE"><img alt="license: MIT" src="https://img.shields.io/badge/license-MIT-2a9d8f"></a>
+  <img alt="python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-23262b">
+  <img alt="AES 2026 R1" src="https://img.shields.io/badge/AEDT-2026%20R1-2a9d8f">
+</p>
+
+This module lets MCP clients such as Codex and DeepSeek Harness control Ansys Electronics Desktop through PyAEDT. AEDT 2026 R1 is the default and live-tested target.
+
+**Guard rails:** managed-only AEDT attach, unmanaged-session detection, best-effort command audit, arbitrary-code off by default, and a fail-closed policy shipped for both clients. Start with [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [docs/CLIENTS.md](docs/CLIENTS.md); DSH/Codex ready-to-use configs and the patched AEDT skill live under [examples/clients/](examples/clients/).
 
 ## Enforcement boundary (v0.3.2)
 
