@@ -67,6 +67,21 @@ run_approved_builder(
 - The attach-only wrapper stays active while the builder executes; the active project must remain
   inside the working/output roots.
 
+## Keeping the approved copy in sync
+
+The repository ships an operator helper at `tools/approve_builder.py` (a local copy is also
+available as `D:\AgentAEDT_Collab\approve_builder.py`). It keeps a frozen approved copy under
+`C:\ProgramData\ansys-aedt-mcp\approved\<builder_id>.py` and updates the allowlist atomically:
+
+```powershell
+& $py .\tools\approve_builder.py review p0_model "<new p0_model.py>"
+& $py .\tools\approve_builder.py apply  p0_model "<new p0_model.py>" --yes
+& $py .\tools\approve_builder.py check  p0_model
+```
+
+`apply` preserves the parameter schema/output roots; changing the builder code or adding parameters
+still requires a human review. `check` must print `STATUS: OK`.
+
 ## Operator workflow
 
 1. Review the builder script (geometry, boundaries, no destructive operations).
