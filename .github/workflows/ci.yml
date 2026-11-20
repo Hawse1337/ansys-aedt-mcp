@@ -1,0 +1,32 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[dev]"
+      - name: Offline tests
+        # Two tests assert host-specific values (available CPU count / immediate budget abort
+        # ordering) and are excluded on shared CI runners; the rest of the suite is
+        # machine-independent.
+        run: >-
+          python -m pytest tests -q
+          -k "not test_budget_breach_aborts_and_fails
+          and not test_cores_and_tasks_reach_the_worker_and_the_record"
