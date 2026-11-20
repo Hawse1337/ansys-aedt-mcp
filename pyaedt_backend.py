@@ -426,6 +426,15 @@ class PyAedtBackend:
     ) -> dict[str, Any]:
         if command not in _DESKTOP_COMMANDS | _HFSS_COMMANDS:
             raise BackendCommandError(f"unsupported command: {command}")
+        if command in {"run_python_code", "run_python_script"} and self._real_aedt:
+            allowed = os.environ.get("AEDT_MCP_ALLOW_ARBITRARY_CODE", "").strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+            if not allowed:
+                raise BackendCommandError(
+                    "E_ARBITRARY_CODE_DISABLED: arbitrary broker code is disabled by default; "
+                    "use dedicated tools or set AEDT_MCP_ALLOW_ARBITRARY_CODE=1 for a supervised session"
+                )
         if arguments is None:
             arguments = {}
         if not isinstance(arguments, Mapping):
@@ -562,6 +571,15 @@ class PyAedtBackend:
             solve = arguments.get("solve", True)
             if not isinstance(solve, bool):
                 raise BackendCommandError("solve must be a boolean")
+            if solve:
+                from aedt_guard.audit import enforce_analyze as _enforce_analyze
+
+                _verdict = _enforce_analyze(
+                    "build_wr90_waveguide", arguments,
+                    project=project_name, design=design_name, setup=None,
+                )
+                if not _verdict["allowed"]:
+                    raise BackendCommandError("E_UNGUARDED_ANALYZE: " + _verdict["reason"])
         else:
             project_name = _required_text(arguments, "project_name")
             design_name = _required_text(arguments, "design_name")

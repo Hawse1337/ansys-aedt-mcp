@@ -24,10 +24,11 @@ security boundary it is not.
 
 | control | behaviour |
 |---|---|
-| managed-session registry | every AEDT launched through the guard is recorded (PID, process create time, gRPC port, launch source) in a state file |
+| managed-session registry | every AEDT launched through the guard is recorded (PID, process create time, gRPC port, launch source, verified flag) in a state file; the file is user-writable, so treat it as an integrity/visibility control, not a security boundary |
 | managed-only attach | `connect_to_aedt` / PyAEDT attach through the guard refuses PIDs/ports that are not in the registry; escape hatch `AEDT_MCP_ALLOW_UNMANAGED=1` is an explicit human opt-in |
 | unmanaged detection | `guard_status` classifies every live `ansysedt.exe` as managed or unmanaged and reports the enforcement mode |
-| command audit | every MCP worker command appends a JSONL line (command, target, allow/refuse, argument hash) to `<state>/guard_audit.jsonl` |
+| command audit | MCP worker calls append a JSONL line (command, target, allow/refuse, argument hash) to `<state>/guard_audit.jsonl`; this is best-effort, excludes launch readiness, and is user-writable |
+| arbitrary code off by default | `run_python_code` / `run_python_script` are refused unless `AEDT_MCP_ALLOW_ARBITRARY_CODE=1` is set by the operator; they can otherwise forge managed records or attach directly |
 | analysis enforcement (pre-existing) | when `AEDT_GUARD_ENFORCE=1`, analysis submissions need a valid run token; `AEDT_ALLOW_UNGUARDED=1` records an escape-hatch bypass |
 
 State location: `%LOCALAPPDATA%\ansys-aedt-mcp` (override with `AEDT_MCP_STATE_DIR`).
@@ -38,15 +39,17 @@ State location: `%LOCALAPPDATA%\ansys-aedt-mcp` (override with `AEDT_MCP_STATE_D
    MCP controls. Mitigation: run the agent under a restricted account (AppLocker/WDAC deny
    `ansysedt.exe`; separate Windows account/service for AEDT+guard), or run AEDT in a separate
    VM/container and expose only the guard service.
-2. **Arbitrary code tools.** The MCP surface includes `run_python_code` / `run_python_script`. Code
-   that runs inside the worker can do anything the worker can do. When `AEDT_GUARD_ENFORCE=1`,
-   free-form code that mentions analysis is blocked without a run token, but this is a textual check,
-   not a sandbox. Prefer dedicated tools, and set `AEDT_GUARD_ENFORCE=1` for production campaigns.
+2. **Arbitrary code tools.** `run_python_code` / `run_python_script` are refused by default at both
+   the MCP surface and the real worker backend; a human operator can enable them for a supervised
+   session. When enabled, code runs inside the worker and can do anything the worker can do,
+   including bypassing the guard's own checks; the textual analysis scan is not a sandbox. Prefer
+   dedicated tools and `AEDT_GUARD_ENFORCE=1` for production campaigns.
 3. **Port reuse / PID reuse.** The registry stores process create times and prunes dead entries;
    a session that exits and a new process reusing its PID is not considered managed.
-4. **Guard state tampering.** A same-privilege process could edit the registry file. Integrity is
-   therefore advisory; pair the guard with file audit (4663) and process-create audit (4688) when
-   accountability matters.
+4. **Guard state / audit tampering.** A same-privilege process can edit the registry or audit file;
+   both are advisory evidence. Exported tool outputs are refused paths inside the guard state dir,
+   but a shell can still rewrite it. Pair the guard with file audit (4663) and process-create audit
+   (4688) when accountability matters.
 
 ## Client obligations (agent side)
 

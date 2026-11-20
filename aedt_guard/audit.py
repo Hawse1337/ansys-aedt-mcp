@@ -31,6 +31,9 @@ def _campaign_dir(arguments: dict[str, Any] | None) -> Path | None:
     token = (arguments or {}).get("run_token")
     if token:
         try:
+            path = Path(token).expanduser().resolve()
+            if not path.is_file():
+                return None
             return campaign_root_for_token(token)
         except TokenError:
             return None
@@ -45,6 +48,8 @@ def append_audit(campaign_dir: Path, entry: dict[str, Any]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def read_audit(campaign_dir: str | Path) -> list[dict[str, Any]]:
@@ -64,7 +69,13 @@ def read_audit(campaign_dir: str | Path) -> list[dict[str, Any]]:
 
 
 def summarize(campaign_dir: str | Path) -> dict[str, Any]:
+    target = Path(campaign_dir) / AUDIT_RELATIVE
+    raw_lines = 0
+    malformed = 0
+    if target.is_file():
+        raw_lines = len([line for line in target.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()])
     entries = read_audit(campaign_dir)
+    malformed = max(0, raw_lines - len(entries))
     denied = [e for e in entries if not e.get("allowed")]
     bypass = [e for e in entries if e.get("allowed") and e.get("reason") == "escape_hatch"]
     governed = [e for e in entries if e.get("allowed") and e.get("run_id")]
@@ -74,6 +85,9 @@ def summarize(campaign_dir: str | Path) -> dict[str, Any]:
         "unguarded_count": len(denied) + len(bypass),
         "escape_hatch": len(bypass),
         "governed": len(governed),
+        "audit_present": target.is_file(),
+        "malformed_lines": malformed,
+        "tampered": malformed > 0,
     }
 
 

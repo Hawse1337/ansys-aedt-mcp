@@ -12,4 +12,6 @@
           AEDT_INSTALL_DIR: 'D:\ANSYS Inc\v261\AnsysEM'
           AEDT_WORKER_TIMEOUT: "1800"
           AEDT_LAUNCH_TIMEOUT: "240"
+        toolCallTimeoutMs: 2400000
+        startupTimeoutMs: 300000
         failOnStartupError: true

@@ -92,6 +92,15 @@ Create geometry first, assign coils, create a winding, then link named coils.
 Motion tools assign an existing enclosing band in a magnetic Transient design.
 Validate before analyze_design. API acceptance, cached properties, existing
 results, and desktop idle state are not proof of latest-solve completion.
+
+GUARD POLICY (fail closed):
+- If these tools refuse an unmanaged session or disabled arbitrary code, STOP. Do not launch
+  ansysedt.exe, import PyAEDT, edit .aedt files, or work around the refusal.
+- Never set AEDT_MCP_ALLOW_UNMANAGED, AEDT_ALLOW_UNGUARDED, AEDT_MCP_ALLOW_ARBITRARY_CODE,
+  AEDT_GUARD_ALLOW_CREATE, AEDT_GUARD_ATTACH_OPEN or AEDT_GUARD_SEARCH_DIRS yourself; those
+  are human operator decisions in the client configuration, not autonomous defaults.
+- Call guard_status before a measured run; report scan.unmanaged and scan.enforcement.
+- Do not change antenna geometry or project structure without explicit user approval.
 """
 
 mcp = FastMCP("ansys-aedt-mcp-server", instructions=INSTRUCTIONS)
@@ -101,6 +110,31 @@ aedt_launcher = AedtLauncher(worker_client=worker_client)
 
 
 GUARD_AUDIT_NAME = "guard_audit.jsonl"
+ARBITRARY_CODE_ENV = "AEDT_MCP_ALLOW_ARBITRARY_CODE"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _arbitrary_code_allowed() -> bool:
+    """Arbitrary code execution is disabled unless the operator opts in."""
+    return os.environ.get(ARBITRARY_CODE_ENV, "").strip().lower() in _TRUE_VALUES
+
+
+def _refuse_arbitrary_code(command: str, *, pid: int | None, port: int | None) -> dict[str, Any]:
+    _audit_worker_call(command, pid=pid, port=port, arguments={}, outcome="refused",
+                       detail="arbitrary code disabled by default")
+    return {
+        "refused": True,
+        "command": command,
+        "reason": (
+            "run_python_code/run_python_script execute arbitrary Python inside the AEDT "
+            "broker and can forge managed-session records or attach to unmanaged sessions. "
+            "They are disabled by default; use the dedicated tools for geometry, projects "
+            "and solves."
+        ),
+        "note": "a human operator can enable this in the guard configuration; autonomous agents must not",
+    }
+
+
 
 
 def _audit_worker_call(
@@ -133,6 +167,31 @@ def _audit_worker_call(
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:  # noqa: BLE001 - audit must be best effort
         pass
+
+
+def _reject_guard_state_path(path: str | None, label: str) -> None:
+    """Refuse tool output paths that would overwrite guard state or audit files."""
+    if not path:
+        return
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except OSError:
+        return
+    state = managed_sessions.state_dir().resolve()
+    if resolved == state or state in resolved.parents:
+        raise ValueError(
+            "%s path must not be inside the guard state directory (%s)" % (label, state)
+        )
+
+
+def _audit_health() -> dict[str, Any]:
+    path = managed_sessions.state_dir() / GUARD_AUDIT_NAME
+    try:
+        stat = path.stat()
+    except OSError:
+        return {"path": str(path), "exists": False, "bytes": 0}
+    return {"path": str(path), "exists": True, "bytes": stat.st_size,
+            "modified_utc": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()}
 
 
 def _target(pid: int | None, port: int | None) -> AedtTarget:
@@ -206,8 +265,16 @@ async def guard_status() -> dict[str, Any]:
     return {
         "guard": "ansys-aedt-mcp",
         "allow_unmanaged": managed_sessions.allow_unmanaged(),
-        "managed_sessions": await asyncio.to_thread(managed_sessions.list_managed),
+        "enforcement_enabled": os.environ.get("AEDT_GUARD_ENFORCE", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "allow_unguarded": os.environ.get("AEDT_ALLOW_UNGUARDED", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "arbitrary_code_allowed": _arbitrary_code_allowed(),
+        "managed_sessions": await asyncio.to_thread(
+            managed_sessions.list_managed, prune_dead=False
+        ),
         "scan": scan,
+        "audit": _audit_health(),
         "state_dir": str(managed_sessions.state_dir()),
     }
 
@@ -235,14 +302,23 @@ async def launch_aedt(
             "sessions": sessions,
         }
     selected_version = version or "2026.1"
-    result = await asyncio.to_thread(
-        aedt_launcher.launch,
-        version=selected_version,
-        port=port,
-        install_dir=install_dir or None,
-        non_graphical=non_graphical,
-        timeout=timeout,
-    )
+    try:
+        result = await asyncio.to_thread(
+            aedt_launcher.launch,
+            version=selected_version,
+            port=port,
+            install_dir=install_dir or None,
+            non_graphical=non_graphical,
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001 - audited then re-raised
+        _audit_worker_call("launch_aedt", pid=None, port=port, arguments={},
+                           outcome="refused", detail="%s: %s" % (type(exc).__name__, exc))
+        raise
+    _audit_worker_call("launch_aedt", pid=int(result.get("pid") or 0) or None,
+                       port=int(result.get("port") or 0) or None, arguments={},
+                       outcome="allowed")
+    managed_ok = False
     try:
         managed_sessions.record_launch(
             pid=int(result["pid"]),
@@ -251,10 +327,12 @@ async def launch_aedt(
             non_graphical=non_graphical,
             source="mcp.launch_aedt",
         )
-    except Exception:  # noqa: BLE001 - never fail a successful launch on bookkeeping
-        pass
+        managed_sessions.mark_verified(pid=int(result["pid"]))
+        managed_ok = managed_sessions.is_managed(pid=int(result["pid"]))
+    except Exception:  # noqa: BLE001 - report the bookkeeping failure instead of hiding it
+        managed_ok = False
     result["launched"] = True
-    result["managed"] = True
+    result["managed"] = managed_ok
     if application:
         result["application"] = await _worker_call(
             "create_design",
@@ -347,7 +425,15 @@ async def release_connection(
 ) -> dict[str, Any]:
     """Release the broker for one explicit AEDT target without closing AEDT."""
     target = _target(pid, port)
-    return await worker_client.release_async(target, timeout=timeout)
+    try:
+        result = await worker_client.release_async(target, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - audited then re-raised
+        _audit_worker_call("release_connection", pid=pid, port=port, arguments={},
+                           outcome="refused", detail="%s: %s" % (type(exc).__name__, exc))
+        raise
+    _audit_worker_call("release_connection", pid=pid, port=port, arguments={},
+                       outcome="allowed")
+    return result
 
 
 @mcp.tool()
@@ -381,6 +467,8 @@ async def run_python_script(
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Execute a Python script through the selected AEDT Desktop session."""
+    if not _arbitrary_code_allowed():
+        return _refuse_arbitrary_code("run_python_script", pid=pid, port=port)
     return await _worker_call(
         "run_python_script",
         pid=pid,
@@ -399,6 +487,8 @@ async def run_python_code(
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Execute inline Python in the persistent PyAEDT broker namespace."""
+    if not _arbitrary_code_allowed():
+        return _refuse_arbitrary_code("run_python_code", pid=pid, port=port)
     return await _worker_call(
         "run_python_code",
         pid=pid,
@@ -542,6 +632,7 @@ async def save_project(
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Save a named or active project, optionally to a new path."""
+    _reject_guard_state_path(path or save_as, "save_project output")
     return await _worker_call(
         "save_project",
         pid=pid,
@@ -701,6 +792,7 @@ async def export_results(
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Export results, including Icepak residual history and mesh statistics."""
+    _reject_guard_state_path(output_path, "export_results output")
     return await _worker_call(
         "export_results",
         pid=pid,
@@ -727,6 +819,7 @@ async def screenshot(
     timeout: float | None = None,
 ) -> list[TextContent | ImageContent]:
     """Capture an AEDT design view and return MCP text and image content."""
+    _reject_guard_state_path(path, "screenshot output")
     result = await _worker_call(
         "screenshot",
         pid=pid,
@@ -763,6 +856,7 @@ async def export_config(
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Export an active design configuration as JSON and return it inline."""
+    _reject_guard_state_path(output, "export_config output")
     return await _worker_call(
         "export_config",
         pid=pid,

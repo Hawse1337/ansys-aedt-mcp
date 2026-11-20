@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.1 - 2026-11-20
+
+Hardening after an adversarial review of 0.3.0 (three independent reviewers):
+
+- Managed-session registry: strict schema (PID, numeric create time, port), verified flag,
+  cross-process file lock, unique temp file + fsync, non-mutating reads.
+- Enforcement: port attach resolves the actual listener owner and compares it with the recorded
+  PID; PID attach requires a verified record (a fresh spawn record only while a launch is in
+  flight); malformed/missing create times fail closed.
+- Launch: the executable is restricted to configured AEDT roots; failed launches drop their
+  registry record and keep duplicate-launch protection; `managed: true` is only reported after
+  the record is actually visible.
+- Arbitrary code: refused by default at the MCP surface **and** at the real worker backend
+  (`AEDT_MCP_ALLOW_ARBITRARY_CODE` is a human operator decision). Refusals no longer print the
+  enable recipe.
+- Tokens: run tokens must name their full scope; a setup-scoped token no longer authorises
+  `analyze_all_designs` or a call that omits project/design/setup.
+- Solve coverage: `build_wr90_waveguide(solve=True)` and `run_python_script` bodies now pass the
+  analysis gate when `AEDT_GUARD_ENFORCE=1`.
+- Audit: launch/release events are audited, audit health is reported by `guard_status`,
+  `summarize` reports malformed lines (`tampered`), token paths that do not exist no longer divert
+  the campaign audit.
+- Tool output paths under the guard state directory are refused (`export_results`,
+  `export_config`, `screenshot`, `save_project`).
+- Client integration: Codex example/live config uses `required = true`,
+  `default_tools_approval_mode = "prompt"` and disables `run_python_*`; DSH gets an always-loaded
+  fail-closed `AGENTS.md`, guard policy in the MCP instructions, bundle timeouts, and a
+  rewritten AEDT skill without direct-launch advice.
+- Tests: `tests/conftest.py` redirects guard state to a temp dir for the whole suite; new negative
+  tests cover malformed/unmanaged targets, token scope, refusal paths, audit health and the
+  arbitrary-code gate.
+- Docs: corrected audit-coverage claims, `guard_status` schema, tool count (63), user-opened AEDT
+  attach guidance, Codex approval wording, and residual-risk statements (registry/audit are
+  user-writable; OS isolation required for a hard boundary).
+
 ## 0.3.0 - 2026-11-20
 
 Security hardening after a real agent bypassed the guard:

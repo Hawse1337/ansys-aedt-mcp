@@ -11,7 +11,10 @@ refused action:
 
 - managed-only attach (`AEDT_MCP_ALLOW_UNMANAGED=1` is a human-only escape hatch);
 - unmanaged AEDT detection in `guard_status` / `check_aedt_status`;
-- per-command audit at `<state>\guard_audit.jsonl`.
+- best-effort per-command audit at `<state>\guard_audit.jsonl` (MCP worker-call path; launch
+  readiness is recorded in the managed-session registry, not this log);
+- `run_python_code` / `run_python_script` refused by default (operator opt-in
+  `AEDT_MCP_ALLOW_ARBITRARY_CODE=1`), because arbitrary broker code can forge managed records.
 
 The guard is still **not an OS sandbox**: a same-user shell can launch AEDT directly. Read
 [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) before relying on it for access control, and use
@@ -65,7 +68,7 @@ The server never chooses the newest or foreground AEDT window. A successful prob
 - Closing the AEDT window triggers `QuitApplication()` and terminates that target's broker.
 - A timed-out broker is terminated; the AEDT process is never force-terminated.
 
-For an MCP-launched session, prefer the port returned by `launch_aedt`. For a user-opened AEDT window, select its PID from `list_aedt_sessions`.
+For an MCP-launched session, use the PID/port returned by `launch_aedt`. A user-opened AEDT window is **unmanaged** and refused by default; attaching to it needs an explicit human operator decision (see `docs/THREAT_MODEL.md`).
 
 ## Tools
 
@@ -73,7 +76,8 @@ Official PyAEDT MCP-compatible names:
 
 - Lifecycle and diagnostics: `check_aedt_installed`, `check_aedt_status`, `launch_aedt`, `connect_to_aedt`, `disconnect_from_aedt`, `clear_aedt`, and `get_pyaedt_logs`.
 - Projects and designs: `list_projects`, `list_designs`, `open_project`, `save_project`, and `create_design`.
-- Automation: `run_python_code` and `run_python_script`.
+- Automation: `run_python_code` and `run_python_script` (refused by default; an operator can
+  enable them for a supervised session — autonomous agents must use the dedicated tools).
 - Simulation and evidence: `validate_design`, `analyze_design`, `export_results`, `export_config`, `get_model_info`, `screenshot`, and `get_guidelines_for`.
 
 `create_design` supports `Hfss`, `Maxwell2d`, `Maxwell3d`, `Q3d`, `Q2d`, `Icepak`, `Circuit`, `TwinBuilder`, `Mechanical`, `Emit`, `RMXprt`, and `Hfss3dLayout`.
@@ -87,7 +91,7 @@ Local extensions retained from this MCP:
 
 ## Dedicated Maxwell tools
 
-The server adds 15 `maxwell_*` tools, bringing the total to 45. They cover coil terminals, windings and links, current excitations, rotational/translational motion bands, force/torque, eddy effects, setup creation, local mesh operations, design readback, activity, numerical results and field plots. Each requires explicit `project_name`, `design_name` and one `pid`/`port`.
+The server adds 15 `maxwell_*` tools; the full surface is 63 tools. They cover coil terminals, windings and links, current excitations, rotational/translational motion bands, force/torque, eddy effects, setup creation, local mesh operations, design readback, activity, numerical results and field plots. Each requires explicit `project_name`, `design_name` and one `pid`/`port`.
 
 See [Maxwell tools, parameters, examples and verification limits](MAXWELL_TOOLS.md) and the [offline/live verification record](MAXWELL_VALIDATION.md). Restart the MCP server and refresh the client's tool list after updating; the existing AEDT window can remain open. Motion tools assign an existing band and do not construct or validate enclosing geometry. Motor transient behavior, mesh/time-step convergence and engineering conclusions require separate validation.
 
@@ -95,7 +99,7 @@ See [Maxwell tools, parameters, examples and verification limits](MAXWELL_TOOLS.
 
 1. Connect with an explicit `pid` or `port`.
 2. Call `create_design(app_type="Icepak", project_name="Cooling", design_name="BoardThermal")`.
-3. Use `run_python_code` for Icepak geometry, materials, sources, openings, fans, mesh operations, monitors, and setup creation.
+3. Use the dedicated design/setup tools for Icepak geometry, materials, sources, openings, fans, mesh operations, monitors, and setup creation; `run_python_code` is refused by default.
 4. Call `validate_design`, then `analyze_design`.
 5. Confirm solver state and inspect logs, monitor stabilization, maximum temperature, mass-flow conservation, heat balance, mesh/convergence data, and plots.
 

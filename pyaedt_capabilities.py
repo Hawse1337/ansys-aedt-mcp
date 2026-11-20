@@ -683,6 +683,15 @@ class OfficialCapabilities:
         script = Path(_required_text(arguments, "script_path")).expanduser().resolve()
         if not script.is_file():
             raise CapabilityError(f"script file not found: {script}")
+        from aedt_guard.audit import enforce_python_code as _enforce_python_code
+
+        try:
+            body = script.read_text(encoding="utf-8", errors="replace")[:2_000_000]
+        except OSError as exc:
+            raise CapabilityError(f"cannot read script for policy check: {exc}") from exc
+        _verdict = _enforce_python_code(body, arguments)
+        if not _verdict["allowed"]:
+            raise CapabilityError("E_UNGUARDED_ANALYZE: " + _verdict["reason"])
         result = desktop.odesktop.RunScript(str(script))
         return {
             "target": self._target(target),

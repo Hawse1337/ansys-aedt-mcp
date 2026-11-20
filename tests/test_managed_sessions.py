@@ -85,6 +85,46 @@ class BackendEnforcementTests(unittest.TestCase):
         self.assertTrue(created)
 
 
+class ArbitraryCodeGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self._tmp.name)
+        self._env = mock.patch.dict(os.environ, {"AEDT_MCP_STATE_DIR": str(self.state)}, clear=False)
+        self._env.start()
+        os.environ.pop("AEDT_MCP_ALLOW_ARBITRARY_CODE", None)
+
+    def tearDown(self) -> None:
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def test_run_python_tools_are_refused_by_default(self) -> None:
+        import asyncio
+
+        import mcp_server
+
+        code = asyncio.run(mcp_server.run_python_code(code="result = 1", pid=1))
+        script = asyncio.run(mcp_server.run_python_script(script_path="C:/demo.py", pid=1))
+        self.assertTrue(code["refused"])
+        self.assertTrue(script["refused"])
+        self.assertIn("operator", code["note"])
+        self.assertNotIn("AEDT_MCP_ALLOW_ARBITRARY_CODE", code["note"])
+        lines = (self.state / mcp_server.GUARD_AUDIT_NAME).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+
+    def test_opt_in_allows_the_tool(self) -> None:
+        import asyncio
+        from unittest import mock
+
+        import mcp_server
+
+        fake = mock.Mock()
+        fake.execute_async = mock.AsyncMock(return_value={"executed": True})
+        with mock.patch.object(mcp_server, "worker_client", fake), \
+                mock.patch.dict(os.environ, {"AEDT_MCP_ALLOW_ARBITRARY_CODE": "1"}):
+            result = asyncio.run(mcp_server.run_python_code(code="result = 1", pid=1))
+        self.assertEqual(result, {"executed": True})
+
+
 class AuditLogTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

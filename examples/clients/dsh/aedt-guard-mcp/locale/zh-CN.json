@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "AEDT 守卫（ansys-aedt-mcp）",
-    "description": "接入受控 AEDT MCP 服务：所有 AEDT 动作都有生命周期检查、审计日志，并且只允许附着守卫自己启动的会话。",
+    "description": "失败即停的 AEDT 守卫 MCP 服务（managed 会话限制、审计日志、默认关闭任意代码）。接入：所有 AEDT 动作都有生命周期检查、审计日志，并且只允许附着守卫自己启动的会话。",
     "detail": "docs/DETAIL.md"
   }
 }

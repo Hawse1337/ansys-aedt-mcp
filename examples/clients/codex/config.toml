@@ -9,6 +9,9 @@ args = ['C:\ProgramData\ansys-aedt-mcp\mcp_server.py']
 cwd = 'C:\ProgramData\ansys-aedt-mcp'
 startup_timeout_sec = 300
 tool_timeout_sec = 2400
+required = true
+default_tools_approval_mode = "prompt"
+disabled_tools = ["run_python_code", "run_python_script"]
 
 [mcp_servers."ansys-aedt".env]
 AEDT_VERSION = '2026.1'

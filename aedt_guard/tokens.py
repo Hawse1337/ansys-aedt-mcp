@@ -127,6 +127,11 @@ def verify_token(
     payload = read_token(token_path)
     checks = (("project", project), ("design", design), ("setup", setup))
     for field, requested in checks:
+        if requested is None and payload.get(field) is not None:
+            raise TokenError(
+                f"run token is scoped to {field}='{payload.get(field)}'; the caller must "
+                f"present the same {field} explicitly (omitting it is not a wildcard)"
+            )
         if requested is not None and str(payload.get(field)) != str(requested):
             raise TokenError(
                 f"run token authorises {field}='{payload.get(field)}', "

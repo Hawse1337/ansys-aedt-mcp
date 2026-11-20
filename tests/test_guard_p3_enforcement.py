@@ -176,10 +176,15 @@ class AuditDecisionTests(unittest.TestCase):
         self.assertFalse(suspicious["allowed"])
         token = issue_token(self.campaign, run_id="r1", project="p", design="d", setup="s")
         with mock.patch.dict(os.environ, {"AEDT_GUARD_ENFORCE": "1"}, clear=False):
-            allowed = audit_mod.enforce_python_code(
+            quoted = audit_mod.enforce_python_code(
                 "app.analyze_setup('Setup1')", {"run_token": str(token)}, project="p", design="d"
             )
-        self.assertTrue(allowed["allowed"])
+        self.assertFalse(quoted["allowed"])  # setup-scoped tokens need the setup presented
+        from aedt_guard.tokens import TokenError, verify_token
+        with self.assertRaises(TokenError):
+            verify_token(token, project="p", design="d")
+        payload = verify_token(token, project="p", design="d", setup="s")
+        self.assertEqual(payload.get("setup"), "s")
 
 
 class BackendEnforcementTests(unittest.TestCase):

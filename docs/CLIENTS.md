@@ -22,16 +22,21 @@ mcp__aedt__list_aedt_sessions
 mcp__aedt__guard_status
 mcp__aedt__launch_aedt
 mcp__aedt__connect_to_aedt
-mcp__aedt__run_python_code   (guarded surface; prefer dedicated tools)
+mcp__aedt__run_python_code   (refused by default; operator opt-in only)
 ...
 ```
+
+`run_python_code` / `run_python_script` are **disabled by default**. Enable them only for a
+supervised session (`AEDT_MCP_ALLOW_ARBITRARY_CODE=1`); an autonomous loop should use the
+dedicated tools instead.
 
 Verification:
 
 1. `mcp__aedt__check_aedt_installed` → AEDT/PyAEDT present.
-2. `mcp__aedt__guard_status` → `enforcement: managed_only`, empty `unmanaged` list.
-3. `mcp__aedt__launch_aedt` → returns `managed: true`; `guard_status` now lists it under
-   `managed_sessions`.
+2. `mcp__aedt__guard_status` → inspect `scan.enforcement == "managed_only"`; report (do not use)
+   any entries in `scan.unmanaged`. The list is empty only when no AEDT is open.
+3. `mcp__aedt__launch_aedt` → returns `managed: true`; `guard_status` lists it under
+   `managed_sessions` and `scan.managed`.
 
 Add the fail-closed rule to the agent instructions/skill (for example in an `AGENTS.md` or an AEDT
 skill body):
@@ -40,7 +45,9 @@ skill body):
 AEDT GUARD IS MANDATORY
 - If mcp__aedt__* tools are missing, STOP. Do not run ansysedt.exe, PyAEDT, or edit .aedt files.
 - Only attach through the guard; the guard refuses unmanaged sessions.
-- Never set AEDT_MCP_ALLOW_UNMANAGED=1 or AEDT_ALLOW_UNGUARDED=1 in automated runs.
+- Never set AEDT_MCP_ALLOW_UNMANAGED, AEDT_ALLOW_UNGUARDED, AEDT_MCP_ALLOW_ARBITRARY_CODE,
+  AEDT_GUARD_ALLOW_CREATE, AEDT_GUARD_ATTACH_OPEN or AEDT_GUARD_SEARCH_DIRS. These are human
+  operator decisions in the client configuration; an autonomous run must stop instead.
 - Report mcp__aedt__guard_status before claiming a session is trustworthy.
 ```
 
@@ -69,19 +76,23 @@ Put the same fail-closed rule in the project's `AGENTS.md` so the Codex agent se
 ## AEDT guard is mandatory
 - Use the `ansys-aedt` MCP tools for every AEDT action.
 - If those tools are unavailable, STOP — never use shell-level PyAEDT or `ansysedt.exe`.
-- Never set AEDT_MCP_ALLOW_UNMANAGED=1 or AEDT_ALLOW_UNGUARDED=1 yourself.
+- Never set AEDT_MCP_ALLOW_UNMANAGED, AEDT_ALLOW_UNGUARDED, AEDT_MCP_ALLOW_ARBITRARY_CODE,
+  AEDT_GUARD_ALLOW_CREATE, AEDT_GUARD_ATTACH_OPEN or AEDT_GUARD_SEARCH_DIRS yourself; the human
+  operator sets those in the client configuration and restarts the MCP connection.
 - Call `guard_status` before a measured run and report unmanaged sessions.
 ```
 
-Approval posture: keep a human in the loop around solver time. Codex's approval policy and sandbox
-mode are configured in `config.toml` (for example an `approval_policy`/`sandbox_mode` pair that asks
-before network or full-disk actions); the guard's managed-session refusal is independent of those
-settings and still stops attach to unmanaged sessions.
+Approval posture: Codex `approval_policy`/`sandbox_mode` govern shell execution, not MCP tool calls.
+For the guard MCP row set `required = true` (fail the session when the guard cannot start) and
+`default_tools_approval_mode = "prompt"` (ask before guard tool calls), and disable the arbitrary
+code tools unless needed: `disabled_tools = ["run_python_code", "run_python_script"]`. The guard's
+managed-session refusal is independent of those settings and still stops attach to unmanaged
+sessions. Verify with `codex mcp get ansys-aedt`.
 
 Example files: `examples/clients/codex/config.toml`, `examples/clients/codex/AGENTS.md`.
 
 ## What the client-side rule cannot do
 
-A client instruction is advisory. The enforcing control is the guard's managed-session registry and
-audit log. For a hard boundary, isolate the solver at OS level (separate account/VM); see
-`docs/THREAT_MODEL.md`.
+Client instructions are advisory. The guard's managed-session refusal and worker-level arbitrary-code
+gate are server-side controls, but the registry and audit files are same-user-writable. For a hard
+boundary, isolate the solver at OS level (separate account/VM); see `docs/THREAT_MODEL.md`.

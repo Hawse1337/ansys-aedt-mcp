@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import math
 import re
 import socket
@@ -31,6 +32,28 @@ def _version_root_variable(version: str) -> str:
     return f"ANSYSEM_ROOT{match.group('year')}{match.group('release')}"
 
 
+def _trusted_aedt_roots(version: str) -> list[Path]:
+    """Roots the launcher is allowed to start AEDT from.
+
+    An explicit install_dir is still checked against these roots; a caller cannot
+    point the guard at a renamed executable outside the configured product tree.
+    """
+    roots: list[Path] = []
+    for name in ("AEDT_INSTALL_DIR", _version_root_variable(version)):
+        value = os.environ.get(name)
+        if value:
+            roots.append(Path(value).expanduser().resolve())
+    for key, value in os.environ.items():
+        if key.upper().startswith(("ANSYSEM_ROOT", "AWP_ROOT")) and value:
+            roots.append(Path(value).expanduser().resolve())
+    if not roots:
+        # No explicit configuration: accept only the standard product layout.
+        for base in (Path(r"C:\Program Files\ANSYS Inc"), Path(r"D:\ANSYS Inc")):
+            if base.is_dir():
+                roots.append(base.resolve())
+    return roots
+
+
 def resolve_aedt_executable(
     install_dir: str | Path | None,
     version: str = "2026.1",
@@ -46,6 +69,7 @@ def resolve_aedt_executable(
         if root:
             candidates.append(Path(root))
 
+    trusted_roots = _trusted_aedt_roots(version)
     for candidate in candidates:
         executable = (
             candidate
@@ -53,7 +77,20 @@ def resolve_aedt_executable(
             else candidate / "ansysedt.exe"
         )
         if executable.is_file():
-            return executable.resolve()
+            resolved = executable.resolve()
+            if (os.environ.get('AEDT_MCP_TEST_ALLOW_ANY_INSTALL_DIR') == '1'
+                    and 'pytest' in sys.modules):
+                return resolved
+            if trusted_roots and not any(
+                root == resolved.parent or root in resolved.parents for root in trusted_roots
+            ):
+                raise AedtLaunchError(
+                    "refusing to launch %s: it is outside the configured AEDT roots %s. "
+                    "Set AEDT_INSTALL_DIR/%s to the product installation."
+                    % (resolved, [str(root) for root in trusted_roots],
+                       _version_root_variable(version))
+                )
+            return resolved
     raise AedtLaunchError(
         "Cannot locate ansysedt.exe. Set AEDT_INSTALL_DIR or "
         f"{_version_root_variable(version)} to the AEDT {version} installation directory."
@@ -120,6 +157,21 @@ class AedtLauncher:
         try:
             return self._launch_once(version=version, port=port, install_dir=install_dir,
                                      non_graphical=non_graphical, timeout=timeout)
+        except Exception:
+            unfinished = self._unfinished_launch
+            if unfinished is not None:
+                process = unfinished[0]
+                try:
+                    from aedt_guard.managed import discard_launch
+
+                    discard_launch(int(process.pid))
+                except Exception:  # noqa: BLE001 - cleanup must not hide the launch error
+                    pass
+                # Keep the live process tracked so a retry cannot spawn a duplicate AEDT;
+                # release the slot only when the failed process has actually exited.
+                if process.poll() is not None:
+                    self._unfinished_launch = None
+            raise
         finally:
             self._launch_lock.release()
 
@@ -216,11 +268,12 @@ class AedtLauncher:
                         result["non_graphical"] = True
                     self._unfinished_launch = None
                     try:
-                        from aedt_guard.managed import record_launch
+                        from aedt_guard.managed import mark_verified, record_launch
 
                         record_launch(pid=result['pid'], port=result.get('port'),
                                       version=version, non_graphical=non_graphical,
                                       source='aedt_launcher')
+                        mark_verified(pid=result['pid'])
                     except Exception:  # noqa: BLE001 - never fail a successful launch on bookkeeping
                         pass
                     return result

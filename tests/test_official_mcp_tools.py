@@ -1,4 +1,5 @@
-﻿import unittest
+﻿import os
+import unittest
 
 from mcp.types import ImageContent
 
@@ -147,6 +148,8 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_project_script_export_and_model_tools_are_forwarded(self):
+        os.environ["AEDT_MCP_ALLOW_ARBITRARY_CODE"] = "1"
+        self.addCleanup(os.environ.pop, "AEDT_MCP_ALLOW_ARBITRARY_CODE", None)
         await mcp_server.list_projects(pid=101)
         await mcp_server.list_designs(project_name="Cooling", pid=101)
         await mcp_server.run_python_code(code="result = 1", pid=101)
