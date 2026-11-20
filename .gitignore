@@ -1,0 +1,10 @@
+﻿.venv/
+__pycache__/
+*.egg-info/
+*.bak-hardening-*
+batch.log
+test-artifacts/
+
+.aedt-hardening-backups/
+
+tmp*/
