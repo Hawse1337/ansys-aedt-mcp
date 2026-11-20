@@ -7,7 +7,9 @@ copy, and update the allowlist hash/source path. Operator-only tool; no arbitrar
 from __future__ import annotations
 
 import argparse
+import datetime
 import difflib
+import getpass
 import hashlib
 import json
 import os
@@ -97,10 +99,18 @@ class ApproverApp:
         self.candidate_var.trace_add("write", lambda *_: self._update_candidate_status())
         ttk.Entry(candidate, textvariable=self.candidate_var).pack(side="left", fill="x", expand=True)
         ttk.Button(candidate, text="浏览...", command=self.browse_candidate).pack(side="left", padx=4)
-        ttk.Button(candidate, text="查看差异", command=self.show_diff).pack(side="left")
+        ttk.Button(candidate, text="检查候选版本", command=self.check_candidate).pack(side="left")
         self.candidate_status_var = tk.StringVar(value="（未选择候选文件）")
         ttk.Label(candidate, textvariable=self.candidate_status_var, foreground="#555").pack(
             fill="x", pady=(6, 0)
+        )
+        self.request_info_var = tk.StringVar(value="（未选择候选）")
+        ttk.Label(candidate, textvariable=self.request_info_var, foreground="#555").pack(
+            fill="x"
+        )
+        self.full_diff_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(candidate, text="显示完整差异（可选）", variable=self.full_diff_var).pack(
+            anchor="w", pady=(4, 0)
         )
 
         actions = ttk.Frame(root, padding=(8, 0))
@@ -192,8 +202,21 @@ class ApproverApp:
                 ("✅ 已批准副本一致" if ok else "❌ 已批准副本与 allowlist 不一致")
             )
             self.status_label.configure(foreground="#1b7f3a" if ok else "#b00020")
+            approval = entry.get("approval") if isinstance(entry, dict) else None
+            approval_line = ""
+            if isinstance(approval, dict):
+                approval_line = (
+                    "\n上次批准: %s by %s\n请求时间: %s\n请求来源: %s"
+                    % (
+                        approval.get("approved_at"),
+                        approval.get("approved_by"),
+                        approval.get("requested_at"),
+                        approval.get("requested_source"),
+                    )
+                )
             self._set_detail(
-                "script: %s\nallowlist sha256: %s\nactual   sha256: %s" % (script, expected, actual)
+                "script: %s\nallowlist sha256: %s\nactual   sha256: %s%s"
+                % (script, expected, actual, approval_line)
             )
             self._log("[check] %s: %s" % (self.current_id, "OK" if ok else "MISMATCH"))
         except Exception as exc:  # noqa: BLE001
@@ -202,21 +225,34 @@ class ApproverApp:
 
     def _update_candidate_status(self) -> None:
         entry = self._entry()
-        candidate = Path(self.candidate_var.get()).expanduser() if self.candidate_var.get().strip() else None
+        candidate = (
+            Path(self.candidate_var.get()).expanduser()
+            if self.candidate_var.get().strip()
+            else None
+        )
         if not entry or candidate is None or not candidate.is_file():
             self.candidate_status_var.set("（未选择有效的候选文件）")
+            self.request_info_var.set("（未选择候选）")
             return
         try:
             current_hash = str(entry.get("sha256", "")).lower()
             candidate_hash = sha256(candidate)
             if candidate_hash == current_hash:
-                self.candidate_status_var.set("候选与当前已批准版本一致（sha256 %s）" % candidate_hash[:16])
+                self.candidate_status_var.set(
+                    "候选与当前已批准版本一致（sha256 %s）" % candidate_hash[:16]
+                )
             else:
                 self.candidate_status_var.set(
                     "候选已变化：当前 %s → 候选 %s" % (current_hash[:16], candidate_hash[:16])
                 )
+            requested = datetime.datetime.fromtimestamp(candidate.stat().st_mtime)
+            self.request_info_var.set(
+                "请求时间：%s    请求来源：候选文件修改（%s）"
+                % (requested.strftime("%Y-%m-%d %H:%M:%S"), candidate)
+            )
         except Exception as exc:  # noqa: BLE001
             self.candidate_status_var.set("无法读取候选文件: %s" % exc)
+            self.request_info_var.set("（无法读取候选）")
 
     def edit_schema(self) -> None:
         entry = self._entry()
@@ -264,22 +300,58 @@ class ApproverApp:
         ttk.Button(buttons, text="保存", command=save).pack(side="left")
         ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="left", padx=6)
 
-    def show_diff(self) -> None:
+    def check_candidate(self) -> None:
         entry = self._entry()
         candidate = Path(self.candidate_var.get()).expanduser()
         if not entry or not candidate.is_file():
             messagebox.showwarning("缺少文件", "请先选择 builder 和候选脚本文件。")
             return
         current = Path(str(entry.get("script", "")))
-        before = current.read_text(encoding="utf-8", errors="replace").splitlines() if current.is_file() else []
-        after = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
-        diff = list(
-            difflib.unified_diff(before, after, fromfile=str(current), tofile=str(candidate), lineterm="")
+        before = (
+            current.read_text(encoding="utf-8", errors="replace").splitlines()
+            if current.is_file()
+            else []
         )
-        self._log("\n=== DIFF ===")
-        self._log("current sha256: %s" % entry.get("sha256", ""))
-        self._log("candidate sha256: %s" % sha256(candidate))
-        self._log("\n".join(diff[:4000]) if diff else "(无文本差异)")
+        after = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
+        requested = datetime.datetime.fromtimestamp(candidate.stat().st_mtime)
+        current_hash = str(entry.get("sha256", "")).lower()
+        candidate_hash = sha256(candidate)
+        matcher = difflib.SequenceMatcher(None, before, after)
+        added = removed = blocks = 0
+        changes = []
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            blocks += 1
+            added += j2 - j1
+            removed += i2 - i1
+            for line in after[j1:j2][:3]:
+                changes.append("+ " + line.strip()[:140])
+            for line in before[i1:i2][:3]:
+                changes.append("- " + line.strip()[:140])
+        self._log("\n=== 差异摘要（默认精简）===")
+        self._log("builder: %s" % self.current_id)
+        self._log("当前已批准: %s  (%d 行, sha256 %s)" % (current, len(before), current_hash[:16]))
+        self._log("候选新版本: %s  (%d 行, sha256 %s)" % (candidate, len(after), candidate_hash[:16]))
+        self._log("请求时间: %s" % requested.strftime("%Y-%m-%d %H:%M:%S"))
+        self._log("请求来源: 候选文件修改（%s）" % candidate)
+        self._log("变更: 新增 +%d 行 / 删除 -%d 行 / 变更块 %d 处" % (added, removed, blocks))
+        if changes:
+            self._log("\n关键变更行（最多前 12 条）:")
+            for line in changes[:12]:
+                self._log(line)
+        if self.full_diff_var.get():
+            diff = list(
+                difflib.unified_diff(
+                    before, after, fromfile=str(current), tofile=str(candidate), lineterm=""
+                )
+            )
+            self._log("\n=== 完整 diff（最多显示 2000 行）===")
+            self._log("\n".join(diff[:2000]) if diff else "(无文本差异)")
+        else:
+            self._log(
+                "\n（默认只看摘要；需要全文请勾选“显示完整差异（可选）”后再点“检查候选版本”）"
+            )
         self._log(
             "\n检查清单：几何/边界/端口、是否删除工程、是否额外启动 AEDT、输出路径是否越界。\n"
             "确认无误后点击“批准并更新 allowlist”。"
@@ -291,9 +363,20 @@ class ApproverApp:
         if not entry or not candidate.is_file():
             messagebox.showwarning("缺少文件", "请先选择 builder 和候选脚本文件。")
             return
+        requested = datetime.datetime.fromtimestamp(candidate.stat().st_mtime)
+        requested_time = requested.strftime("%Y-%m-%d %H:%M:%S")
+        requested_source = "候选文件修改（%s）" % candidate
+        old_hash = str(entry.get("sha256", "")).lower()
+        new_hash = sha256(candidate)
         if not messagebox.askyesno(
             "确认批准",
-            "确认已人工 review 候选脚本，并把它设为新的已批准版本？\n\n%s" % candidate,
+            "确认已完成人工 review，并批准新的 builder 版本？\n\n"
+            "Builder: %s\n"
+            "请求时间: %s\n"
+            "请求来源: %s\n"
+            "当前 hash: %s\n"
+            "候选 hash: %s"
+            % (self.current_id, requested_time, requested_source, old_hash, new_hash),
         ):
             return
         try:
@@ -301,20 +384,36 @@ class ApproverApp:
             target = self.approved_dir / (self.current_id + ".py")
             if self.allowlist_path.is_file():
                 backup = self.allowlist_path.with_name(
-                    self.allowlist_path.name + ".bak-" + __import__("time").strftime("%Y%m%d-%H%M%S")
+                    self.allowlist_path.name
+                    + ".bak-"
+                    + __import__("time").strftime("%Y%m%d-%H%M%S")
                 )
                 shutil.copy2(self.allowlist_path, backup)
             shutil.copy2(candidate, target)
             digest = sha256(target)
+            approved_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             entry["script"] = str(target.resolve())
             entry["sha256"] = digest
+            entry["approval"] = {
+                "requested_at": requested_time,
+                "requested_source": requested_source,
+                "approved_at": approved_at,
+                "approved_by": getpass.getuser(),
+                "previous_sha256": old_hash,
+                "approved_sha256": digest,
+            }
             self.data["builders"][self.current_id] = entry
             save_allowlist(self.allowlist_path, self.data)
             self._log(
-                "[apply] %s\n  approved copy: %s\n  sha256: %s"
-                % (self.current_id, target.resolve(), digest)
+                "[apply] %s\n  请求时间: %s\n  请求来源: %s\n  approved: %s\n  sha256: %s"
+                % (self.current_id, requested_time, requested_source, target.resolve(), digest)
             )
-            messagebox.showinfo("已批准", "已更新 allowlist 和 approved 副本。\n\n%s" % digest)
+            messagebox.showinfo(
+                "已批准",
+                "已更新 allowlist 和 approved 副本。\n\n"
+                "请求时间: %s\n请求来源: %s\n批准时间: %s\nsha256: %s"
+                % (requested_time, requested_source, approved_at, digest),
+            )
             self.refresh()
         except Exception as exc:  # noqa: BLE001
             self._log("apply 失败: %r" % (exc,))

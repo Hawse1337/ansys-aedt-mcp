@@ -74,12 +74,20 @@ Double-click `AEDT Builder Approver.exe` (desktop copy; source at
 
 1. select the builder (for example `p0_model`);
 2. choose the candidate script;
-3. inspect the diff/checklist;
+3. click **Check candidate version** to inspect the summary/diff;
 4. click **Approve & update allowlist**.
 
 The GUI recomputes the SHA-256, copies the candidate to
 `C:\ProgramData\ansys-aedt-mcp\approved\<builder>.py`, backs up the allowlist, and updates it
 atomically. The CLI (`tools/approve_builder.py`) remains available for automation.
+
+## GUI v3 notes
+
+- The candidate action is labelled **Check candidate version** (not "view diff").
+- Default output is a concise summary (add/remove counts, changed blocks, key lines); full diff is
+  opt-in.
+- The approval confirmation shows the request time (candidate mtime) and source (candidate path),
+  and writes `approval` metadata into the allowlist entry; the status panel displays it.
 
 ## GUI v2 notes
 
