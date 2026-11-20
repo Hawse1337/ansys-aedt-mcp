@@ -142,7 +142,7 @@ class MaxwellCapabilities:
 
     @staticmethod
     def _transient(app):
-        # PyAEDT 1.5.0's motion methods require the normalized Transient type.
+        # PyAEDT 1.10's motion methods require the normalized Transient type.
         if app.solution_type != "Transient":
             raise CapabilityError("Motion bands require a magnetic Transient design")
 

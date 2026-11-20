@@ -24,7 +24,7 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-项目固定使用 PyAEDT 1.5.0，与本适配器对齐的官方 PyAEDT MCP 能力基线一致。使用 `launch_aedt` 时，`AEDT_INSTALL_DIR` 必须指向包含 `ansysedt.exe` 的目录。
+项目固定使用 PyAEDT 1.10.0（当前稳定版，见 [官方文档](https://aedt.docs.pyansys.com/version/stable/index.html)）。使用 `launch_aedt` 时，`AEDT_INSTALL_DIR` 必须指向包含 `ansysedt.exe` 的目录。
 
 ## MCP 配置
 

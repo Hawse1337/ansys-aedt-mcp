@@ -50,7 +50,7 @@ _SOLUTION_TYPES = {
 
 
 _ATTACH_LOCK = threading.RLock()
-_AUDITED_PYAEDT_VERSION = "1.9.0"
+_AUDITED_PYAEDT_VERSION = "1.10.0"
 
 
 def _clear_design_reports(app: Any) -> int:
@@ -209,7 +209,7 @@ def _attach_only_desktop(module: Any, kwargs: Mapping[str, Any], *,
                          grpc_port_hint: int | None = None):
     """Block the audited vendor fallback paths for this one Desktop constructor.
 
-    PyAEDT 1.9 can set new_desktop=True when its own session discovery misses a
+    PyAEDT 1.10 can set new_desktop=True when its own session discovery misses a
     port. Do not let a health check spawn AEDT. Restore methods on every exit;
     the broker serializes calls, and this process-local lock covers this patch.
     Arbitrary run_python_code calls are outside this narrow protection.

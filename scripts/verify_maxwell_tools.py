@@ -86,8 +86,8 @@ async def verify(args):
                 if len(report["maxwell_tools"]) != 15:
                     raise RuntimeError("Expected 15 registered Maxwell tools")
                 installed = await call("check_aedt_installed")
-                if installed.get("pyaedt_version") != "1.5.0":
-                    raise RuntimeError("Live verification requires pinned PyAEDT 1.5.0")
+                if installed.get("pyaedt_version") != "1.10.0":
+                    raise RuntimeError("Live verification requires pinned PyAEDT 1.10.0")
                 await call("check_aedt_status", {})
                 original = await call("get_project_info")
                 idle = await call("run_python_code", {"code": "result = {'running': desktop.are_there_simulations_running}"})

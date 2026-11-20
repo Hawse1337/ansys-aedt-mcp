@@ -57,7 +57,7 @@
 | 项 | 值 |
 |---|---|
 | AEDT 版本 | 2026.1（`D:\Application\ANSYS Inc\Electronics\v261\AnsysEM\ansysedt.exe`）|
-| PyAEDT | 1.9.0，装在 `D:\Application\aedt-mcp\.venv\Scripts\python.exe` |
+| PyAEDT | 1.10.0，装在项目虚拟环境的 `Scripts\python.exe` |
 | 该 venv 有 | `ansys.aedt.core`（PyAEDT）|
 | 该 venv **没有** | `PIL` / `python-docx` / `python-pptx` / `matplotlib` |
 | 工作区 Python（`load_workspace_dependencies` 返回） | 有 `numpy / pandas / PIL / python-docx / python-pptx / openpyxl`，**没有 PyAEDT** |
@@ -950,7 +950,7 @@ PyAEDT 会把工程建到**它自己的默认目录**，事后找不着。所以
 
 ### 13.1 症状：四条报错，一个根因
 
-在 AEDT 2026.1 + PyAEDT 1.9.0 上新建 HFSS 设计，Message Manager 里会连续出现：
+在 AEDT 2026.1 + PyAEDT 1.9.0 上新建 HFSS 设计（该观察记录于 1.9.0；当前固定 1.10.0），Message Manager 里会连续出现：
 
 ```
 [error] assignment = Region   name = rad_region        ← 辐射边界分配失败

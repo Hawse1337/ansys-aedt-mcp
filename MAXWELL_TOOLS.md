@@ -1,8 +1,8 @@
 # Maxwell 专用工具 / Dedicated Maxwell tools
 
-本模块增加 15 个 `maxwell_*` 工具，AEDT MCP 总工具数为 45。基于项目固定的 PyAEDT 1.5.0；注册工具与离线测试不等于 Maxwell 实机求解验证。
+本模块增加 15 个 `maxwell_*` 工具，AEDT MCP 总工具数为 45。基于项目固定的 PyAEDT 1.10.0；注册工具与离线测试不等于 Maxwell 实机求解验证。
 
-This module adds 15 `maxwell_*` tools, bringing the AEDT MCP total to 45. The adapter targets the pinned PyAEDT 1.5.0 API. Registration and offline tests do not establish live Maxwell solve validity.
+This module adds 15 `maxwell_*` tools, bringing the AEDT MCP total to 45. The adapter targets the pinned PyAEDT 1.10.0 API. Registration and offline tests do not establish live Maxwell solve validity.
 
 ## 安装与加载 / Installation and loading
 
@@ -84,7 +84,7 @@ Current expressions must be valid in the selected AEDT design/solver. An Externa
 
 ## 运动和求解示例 / Motion and solve example
 
-运动工具要求磁瞬态设计，按 PyAEDT 1.5.0 读回的标准类型为 `Transient`。`RotorBand` 必须事先创建且包围全部运动对象；工具不会自动生成 band 几何，也不会证明拓扑、气隙或运动包围关系正确。
+运动工具要求磁瞬态设计，按 PyAEDT 1.10.0 读回的标准类型为 `Transient`。`RotorBand` 必须事先创建且包围全部运动对象；工具不会自动生成 band 几何，也不会证明拓扑、气隙或运动包围关系正确。
 
 Motion tools require a magnetic transient design with PyAEDT's normalized `Transient` solution type. Create `RotorBand` first and ensure it encloses all moving objects. The tools neither construct band geometry nor verify topology, air gaps or containment.
 
@@ -133,7 +133,7 @@ English:
 
 ## 验证 / Verification
 
-离线测试覆盖注册、路由、PyAEDT 1.5.0 方法签名、错会话/工程/设计、2D 面选择、极性/匝数、非瞬态运动、重复名称、原生失败、读回不可用，以及空/错误结果。它们使用替身对象，不能证明真实求解正确。
+离线测试覆盖注册、路由、PyAEDT 1.10.0 方法签名、错会话/工程/设计、2D 面选择、极性/匝数、非瞬态运动、重复名称、原生失败、读回不可用，以及空/错误结果。它们使用替身对象，不能证明真实求解正确。
 
 Offline tests cover registration, dispatch, pinned API signatures, target/design guards, 2D selection, polarity/counts, motion physics, duplicate names, API failures, missing readback and invalid result data. They use fake applications and do not validate a real solve.
 

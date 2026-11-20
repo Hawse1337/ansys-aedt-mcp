@@ -24,7 +24,7 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-The package pins PyAEDT 1.5.0, matching the official PyAEDT MCP capability baseline used for this adapter. Set `AEDT_INSTALL_DIR` to the directory containing `ansysedt.exe` when using `launch_aedt`.
+The package pins PyAEDT 1.10.0, the current stable release ([documentation](https://aedt.docs.pyansys.com/version/stable/index.html)). Set `AEDT_INSTALL_DIR` to the directory containing `ansysedt.exe` when using `launch_aedt`.
 
 ## MCP Configuration
 

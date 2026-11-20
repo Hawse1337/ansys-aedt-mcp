@@ -1,6 +1,10 @@
 # Maxwell 工具验证记录 / Maxwell tool verification
 
+> 版本提示（2026-11-20）：本页是当时的验证记录；当前依赖已升级到 PyAEDT 1.10.0，版本相关的实机复验待补。
+
 验证日期：2026-09-30（Asia/Shanghai）。目标：AEDT 2026 R1 / PyAEDT 1.5.0，现有 AEDT 图形会话。
+
+> Version note (2026-11-20): this is the original validation record; the current pin is PyAEDT 1.10.0 and live re-validation is pending.
 
 Verified on 2026-09-30 (Asia/Shanghai), against the existing AEDT 2026 R1 session with pinned PyAEDT 1.5.0.
 

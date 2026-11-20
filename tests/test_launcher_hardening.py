@@ -232,7 +232,7 @@ class AttachOnlyRegressionTests(unittest.TestCase):
 
     def test_unreviewed_pyaedt_version_is_refused(self):
         with patch('importlib.metadata.version',return_value='2.0.0'):
-            with self.assertRaisesRegex(backend.BackendCommandError,'audited for PyAEDT 1.9.0'):
+            with self.assertRaisesRegex(backend.BackendCommandError,'audited for PyAEDT 1.10.0'):
                 backend._audited_desktop_module()
 
     def test_com_initializer_loads_utilities_without_creating_an_application(self):

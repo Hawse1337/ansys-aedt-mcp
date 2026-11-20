@@ -8,16 +8,16 @@
 |------|------|------|
 | Python（全局） | 3.14.10 | `C:\Users\Administrator\AppData\Local\Programs\Python\Python314` |
 | Git | 2.56.0.4 | `C:\Program Files\Git` |
-| PyAEDT（全局） | 1.9.0 | 系统 Python 的 site-packages |
+| PyAEDT（全局） | 1.10.0 | 系统 Python 的 site-packages |
 | AEDT MCP | 0.2.0 | `C:\ProgramData\ansys-aedt-mcp` |
 | MCP 专用虚拟环境 | Python 3.14.10 | `C:\ProgramData\ansys-aedt-mcp\.venv` |
-| 虚拟环境内 PyAEDT | 1.9.0（加固套件要求） | 同上 |
+| 虚拟环境内 PyAEDT | 1.10.0（当前稳定版） | 同上 |
 | MCP SDK (FastMCP) | 1.30.0 | 同上 |
 | Ansys AEDT | 2026 R1 (v261) | `D:\ANSYS Inc\v261\AnsysEM\ansysedt.exe` |
 
 > 说明：MCP 项目的 `pyproject.toml` 原本锁定 `pyaedt==1.5.0`，但 **1.5.0 的
 > `Desktop(port=...)` 会忽略端口参数**，导致每次按端口连接都新起一个 AEDT
-> （实测表现为进程风暴）。加固套件要求钉到 **1.9.0**，已升级。
+> （实测表现为进程风暴）。此后钉到 1.9.0，2026-11-20 随上游稳定版升级到 **1.10.0**。
 > MCP 使用**独立虚拟环境**；系统 Python 中另装 1.9.0 供日常脚本使用，互不干扰。
 
 > 注意：PyAEDT 1.x 的导入名已改为 `ansys.aedt.core`，`import pyaedt` 不再存在。
@@ -91,7 +91,7 @@ MCP 不会隐式选择 AEDT 窗口，必须显式给 `pid` 或 `port`：
 |--------|------|
 | `git --version` | 2.56.0.windows.4 ✅ |
 | `python --version` | 3.14.10 ✅ |
-| `import ansys.aedt.core`（全局） | 1.9.0 ✅ |
+| `import ansys.aedt.core`（全局） | 1.10.0 ✅ |
 | MCP `initialize` 握手 | 成功，serverInfo `ansys-aedt-mcp-server` ✅ |
 | `tools/list` | 45 个工具 ✅ |
 | `check_aedt_installed` | `installed=true`, `2026.1`, `D:\ANSYS Inc\v261\AnsysEM` ✅ |
@@ -141,7 +141,7 @@ SHA256 `4B79CCBA…59D4`，上游基线 `f6173fc`。
 | 套件自带测试 | 36 项全过（18 + 13 + 5）✅ |
 | 仓库测试 | 12/13 模块通过；`test_aedt_launcher` 因 Windows 8.3 短路径（`ADMINI~1`）失败，属既有问题，`aedt_launcher.py` 未被套件改动 |
 | MCP 握手 / 工具数 | 正常，45 个工具 ✅ |
-| 版本 | pyaedt 1.9.0 / mcp 1.30.0 ✅ |
+| 版本 | pyaedt 1.10.0 / mcp 1.30.0 ✅ |
 
 ## 9. 回滚
 
@@ -157,7 +157,7 @@ SHA256 `4B79CCBA…59D4`，上游基线 `f6173fc`。
 ```powershell
 cd C:\ProgramData\ansys-aedt-mcp
 git checkout baseline-pre-hardening -- .
-& .venv\Scripts\python.exe -m pip install -e .   # pyproject 回滚后会把 pyaedt 装回 1.5.0
+& .venv\Scripts\python.exe -m pip install -e .   # 会按 pyproject 安装当前固定版本 (1.10.0)
 ```
 
 整体切换：

@@ -71,15 +71,14 @@ ModuleNotFoundError: No module named 'mcp.server.fastmcp'
 
 ## 3.1 依赖版本变更（2026-10 期间）
 
-初始安装时 `pyproject.toml` 钉的是 `pyaedt==1.5.0`（上游原值）。此后本机被改为
-**`pyaedt==1.9.0`** 并已实际升级（`pyproject.toml` L8 与 venv 中一致）。
+初始安装时 `pyproject.toml` 钉的是 `pyaedt==1.5.0`（上游原值），随后升级到 1.9.0；2026-11-20 跟踪上游稳定版升级为 **`pyaedt==1.10.0`**（`pyproject.toml` 与 venv 一致）。
 
 2026-10-21 已复验：`pyaedt 1.9.0` + `mcp 1.30.0` 下**全部 141 项单元测试通过**
 （1 项跳过），45 个工具注册正常。注意上游那个测试名字叫
 `test_dispatched_kwargs_match_installed_pyaedt_150_signatures`，虽然名字里带 150，
 但它是对**当前已安装** PyAEDT 的签名做断言，因此 1.9.0 下依然有效并通过。
 
-当前实际版本：`ansys-aedt-mcp 0.2.0` / `mcp 1.30.0` / `pyaedt 1.9.0`。
+当前实际版本：`ansys-aedt-mcp 0.2.0` / `mcp 1.30.0` / `pyaedt 1.10.0`。
 
 **实机等价性验证（2026-10-21）。** 单元测试只能证明代码能跑，证明不了 1.9.0 驱动
 真实 AEDT 的结果是否变化，因此做了同模型跨版本对比：WR-90 TE10 分别在
@@ -215,7 +214,7 @@ AEDT 由 `launch_aedt` 以 `ansysedt.exe -grpcsrv <port>` 启动；手动打开�
 - `python -m unittest discover -s tests -v` → **141 项通过，1 项跳过**
   （跳过的是需要真实 AEDT 的 live 测试）。
 - `mcp_server` 导入成功，注册 **45** 个工具，其中 `maxwell_*` **15** 个。
-- 经 DSH 端到端调用 `check_aedt_installed` → 正确返回 AEDT 2026.1 + PyAEDT 1.9.0。
+- 经 DSH 端到端调用 `check_aedt_installed` → 正确返回 AEDT 2026.1 + PyAEDT 1.10.0。
 - `list_aedt_sessions` → 正确返回空列表 + `selection_required: true`。
 
 ### 实机验证 1：联通与写控制（通过）
@@ -424,7 +423,7 @@ $py = "D:\Application\ANSYS Inc\Electronics\v261\AnsysEM\commonfiles\CPython\3_1
 | 工具数 | **45** | **22** |
 | 维护状态 | 第三方快照，2026-09-30 后未更新 | 官方，当日仍有提交；0.1.1→0.2.4 共 14 个版本 |
 | Python 要求 | `>=3.10`（本机用 AEDT 自带 3.10.19） | PyPI 0.2.4 为 `>=3.12,<4`；仓库 main 为 `>=3.13,<4` |
-| 依赖 | `mcp>=1.0`（本机锁 `<2`）、`pyaedt==1.9.0`、`psutil` | `pyaedt[graphics]>=1.3.0`、`ansys-common-mcp>=0.3.3`、`typer==0.27.3` |
+| 依赖 | `mcp>=1.0`（本机锁 `<2`）、`pyaedt==1.10.0`、`psutil` | `pyaedt[graphics]>=1.3.0`、`ansys-common-mcp>=0.3.3`、`typer==0.27.3` |
 | 传输 | stdio | stdio + HTTP |
 | 安装方式 | 源码 + venv | PyPI / `uvx` / Windows 安装器 |
 
@@ -541,3 +540,11 @@ $git = "D:\Application\Git\cmd\git.exe"
 
 改完源码后需**重启 MCP 服务**（或触发 `cordis.patch.yml` 的 HMR）才生效，
 因为 broker 是独立进程、启动时加载模块。
+
+
+## 2026-11-20 PyAEDT 1.10.0 live attach check
+
+- Client: PyAEDT 1.10.0 against AEDT 2026.1 (gRPC, explicit PID).
+- ping -> connected=true, aedt_version=2026.1; list_projects -> empty list; desktop release -> True.
+- The attach-only protection audited path (_validate_port, __initialize, __dispatch_win32, check_starting_mode) is present in the 1.10.0 Desktop class.
+- Offline suite after the upgrade: 458 passed, 1 skipped.
