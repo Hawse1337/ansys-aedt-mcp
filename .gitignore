@@ -10,3 +10,5 @@ test-artifacts/
 tmp*/
 
 builders.local.json
+builders.local.json.bak-*
+approved/
