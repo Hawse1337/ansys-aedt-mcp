@@ -67,6 +67,20 @@ run_approved_builder(
 - The attach-only wrapper stays active while the builder executes; the active project must remain
   inside the working/output roots.
 
+## Windows GUI (recommended)
+
+Double-click `AEDT Builder Approver.exe` (desktop copy; source at
+`tools/builder_approver_gui.py`). It is a small Tkinter operator tool:
+
+1. select the builder (for example `p0_model`);
+2. choose the candidate script;
+3. inspect the diff/checklist;
+4. click **Approve & update allowlist**.
+
+The GUI recomputes the SHA-256, copies the candidate to
+`C:\ProgramData\ansys-aedt-mcp\approved\<builder>.py`, backs up the allowlist, and updates it
+atomically. The CLI (`tools/approve_builder.py`) remains available for automation.
+
 ## Keeping the approved copy in sync
 
 The repository ships an operator helper at `tools/approve_builder.py` (a local copy is also

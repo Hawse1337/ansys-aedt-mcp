@@ -4,11 +4,9 @@ __pycache__/
 *.bak-hardening-*
 batch.log
 test-artifacts/
-
 .aedt-hardening-backups/
-
 tmp*/
-
 builders.local.json
 builders.local.json.bak-*
 approved/
+tools/*.exe
