@@ -54,7 +54,8 @@ Then connect an MCP client to `.\mcp_server.py` (stdio). See
 | managed-only attach | guard-launched AEDT is recorded (PID, create time, port, verified); unmanaged sessions are refused |
 | unmanaged detection | `guard_status` lists every live `ansysedt.exe` as managed/unmanaged and reports `scan.enforcement` |
 | arbitrary code | `run_python_code` / `run_python_script` refused at MCP and worker layers unless a human operator enables them |
-| tokens | `AEDT_GUARD_ENFORCE=1` binds run tokens to project/design/setup; solve entries are covered |
+| approved builders | `run_approved_builder` executes an operator-allowlisted builder (script hash + typed params + output roots) so agents can run repeated campaigns autonomously without per-run code opt-in |
+| tokens | `AEDT_GUARD_ENFORCE=1` binds run tokens to project/design/setup for the dedicated solve entries; operator-approved builders are vetted code and are not token-enforced |
 | audit | launch/release and guarded-run commands land in `guard_audit.jsonl` with enforcement-mode fields |
 | identity | PyAEDT app objects are checked against the verified desktop |
 
@@ -72,7 +73,8 @@ Both clients stop when the guard tools are missing; they never fall back to dire
 
 ## Verification
 
-- Offline suite: **481 passed, 1 skipped, 118 subtests**.
+- Offline suite: **491 passed, 1 skipped, 118 subtests**.
+- Approved-builder workflow: [docs/BUILDERS.md](docs/BUILDERS.md).
 - Live on AEDT 2026 R1 / PyAEDT 1.10.0: unmanaged attach refused, guard-launched session
   `managed: true`, `run_python_code` refused.
 - Releases and the hardened package are published at:
@@ -167,7 +169,7 @@ Local extensions retained from this MCP:
 
 ## Dedicated Maxwell tools
 
-The server adds 15 `maxwell_*` tools; the full surface is 63 tools. They cover coil terminals, windings and links, current excitations, rotational/translational motion bands, force/torque, eddy effects, setup creation, local mesh operations, design readback, activity, numerical results and field plots. Each requires explicit `project_name`, `design_name` and one `pid`/`port`.
+The server adds 15 `maxwell_*` tools; the full surface is 64 tools. They cover coil terminals, windings and links, current excitations, rotational/translational motion bands, force/torque, eddy effects, setup creation, local mesh operations, design readback, activity, numerical results and field plots. Each requires explicit `project_name`, `design_name` and one `pid`/`port`.
 
 See [Maxwell tools, parameters, examples and verification limits](MAXWELL_TOOLS.md) and the [offline/live verification record](MAXWELL_VALIDATION.md). Restart the MCP server and refresh the client's tool list after updating; the existing AEDT window can remain open. Motion tools assign an existing band and do not construct or validate enclosing geometry. Motor transient behavior, mesh/time-step convergence and engineering conclusions require separate validation.
 

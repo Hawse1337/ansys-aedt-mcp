@@ -1,0 +1,91 @@
+# Approved model builders (`run_approved_builder`)
+
+`run_approved_builder` is the **autonomous** path for repeated modelling runs. It lets an agent
+execute an operator-approved builder with typed parameters — no per-run arbitrary-code opt-in and
+no `run_python_code` gate.
+
+## Why
+
+The default-deny `run_python_code` is correct for unbounded code, but design campaigns need to run
+the same reviewed modelling code many times with different parameters. The allowlist approves the
+**capability once**; the agent runs it autonomously afterwards.
+
+## Allowlist
+
+The operator creates `builders.local.json` next to the guard (or sets `AEDT_GUARD_BUILDERS`):
+
+```json
+{
+  "version": 1,
+  "builders": {
+    "p0_model": {
+      "script": "C:\\ProgramData\\ansys-aedt-mcp\\approved\\p0_model.py",
+      "sha256": "<sha256 of the script>",
+      "entrypoint": "run",
+      "params": {
+        "theta_deg": {"type": "number", "min": 0, "max": 60, "required": true},
+        "family": {"type": "enum", "values": ["A", "B"], "required": true},
+        "feed": {"type": "enum", "values": ["ideal", "coax50"], "required": true},
+        "gap_mm": {"type": "number", "min": 0, "max": 40},
+        "r_tip_mm": {"type": "number", "min": 0, "max": 40}
+      },
+      "output_roots": ["C:\\Users\\Administrator\\Desktop\\da project\\artifacts"]
+    }
+  }
+}
+```
+
+Copy/ACL the reviewed builder into a non-agent-writable directory (for example
+`C:\ProgramData\ansys-aedt-mcp\approved\p0_model.py`) and use that path here. The example
+above intentionally does not point into the campaign workspace.
+
+`builders.local.json` is gitignored. The script must be an absolute path; its SHA-256 is checked at
+the MCP layer and again, on the exact bytes that are executed, in the worker. Changing the script
+requires the operator to review and update the allowlist entry.
+
+## Tool contract
+
+```text
+run_approved_builder(
+    builder_id="p0_model",
+    project_path=<existing .aedt>,
+    outdir=<directory under output_roots>,
+    params={"theta_deg": 20.6, "family": "A", "feed": "ideal", ...},
+    pid/port=<optional existing managed AEDT>,
+) -> {result, stdout, artifacts, builder, ...}
+```
+
+- No explicit target → the tool launches a managed AEDT session and leaves it open for reuse.
+- The source project is copied to `outdir/_work/<uuid>/p0work_<uuid>_<name>.aedt`; the unique stem
+  prevents PyAEDT from silently attaching to an already-open same-name project. The original is
+  never passed to the builder.
+- Parameters are validated against the allowlist schema (numbers finite/in-range, enums, unknown
+  parameters refused). `outdir` must be under an allowed output root and outside guard state.
+- The builder entrypoint receives `port`, `project` (working copy) and `outdir`, plus the validated
+  parameters. It must return a JSON-serializable dict.
+- Every run is audited (`run_approved_builder`, builder id, param digest, refusal/success).
+- The attach-only wrapper stays active while the builder executes; the active project must remain
+  inside the working/output roots.
+
+## Operator workflow
+
+1. Review the builder script (geometry, boundaries, no destructive operations).
+2. Compute its SHA-256, add an allowlist entry.
+3. Run a smoke build; inspect the artifact and validation result.
+4. Agent runs candidates by changing only typed parameters.
+
+## Security boundary
+
+The allowlist is an **integrity control for same-user deployments, not an OS sandbox**. An agent
+with unrestricted file-write access can edit the allowlist and the builder; a same-user shell can
+already bypass the guard. Keep the allowlist and builder scripts outside agent-writable workspace
+locations where possible, protect them with OS ACLs, or use a separate account/VM for a hard
+boundary. Approved code can still call PyAEDT analysis APIs; do not approve scripts you would not
+run yourself.
+
+Residual risks:
+
+- Allowlist and builder scripts are same-user writable unless OS ACLs are applied.
+- Approved code can create arbitrary AEDT objects/analysis; approval covers every branch of the
+  script.
+- The guard verifies the working project and audited session, but it is not a solver sandbox.

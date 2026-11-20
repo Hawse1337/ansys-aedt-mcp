@@ -44,6 +44,13 @@ State location: `%LOCALAPPDATA%\ansys-aedt-mcp` (override with `AEDT_MCP_STATE_D
    session. When enabled, code runs inside the worker and can do anything the worker can do,
    including bypassing the guard's own checks; the textual analysis scan is not a sandbox. Prefer
    dedicated tools and `AEDT_GUARD_ENFORCE=1` for production campaigns.
+2b. **Approved builders.** `run_approved_builder` executes an operator-allowlisted script with
+   typed parameters. The allowlist and script are same-user-writable unless OS ACLs are applied;
+   approved code can still call arbitrary PyAEDT APIs, including analysis. The guard checks the
+   exact script bytes/hash and keeps the attach-only wrapper active, but the allowlist is an
+   integrity control for autonomy, not a sandbox. Keep it outside agent-writable roots, protect
+   it with ACLs, or use account/VM isolation for a hard boundary. See docs/BUILDERS.md.
+
 3. **Port reuse / PID reuse.** The registry stores process create times and prunes dead entries;
    a session that exits and a new process reusing its PID is not considered managed.
 4. **Guard state / audit tampering.** A same-privilege process can edit the registry or audit file;

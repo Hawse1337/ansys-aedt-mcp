@@ -100,6 +100,9 @@ GUARD POLICY (fail closed):
   AEDT_GUARD_ALLOW_CREATE, AEDT_GUARD_ATTACH_OPEN or AEDT_GUARD_SEARCH_DIRS yourself; those
   are human operator decisions in the client configuration, not autonomous defaults.
 - Call guard_status before a measured run; report scan.unmanaged and scan.enforcement.
+- For repeated modelling runs, prefer run_approved_builder: the operator-approved builder and
+  typed parameters are the autonomous path; it does not require per-run arbitrary-code opt-in.
+- Do not edit the builder allowlist or builder scripts; that is an operator decision.
 - Do not change antenna geometry or project structure without explicit user approval.
 """
 
@@ -209,6 +212,7 @@ async def _worker_call(
     port: int | None,
     arguments: dict[str, Any] | None = None,
     timeout: float | None = None,
+    detail: str = "",
 ) -> dict[str, Any]:
     target = _target(pid, port)
     try:
@@ -220,9 +224,12 @@ async def _worker_call(
         )
     except Exception as exc:  # noqa: BLE001 - audited then re-raised
         _audit_worker_call(command, pid=pid, port=port, arguments=arguments,
-                           outcome="refused", detail="%s: %s" % (type(exc).__name__, exc))
+                           outcome="refused",
+                           detail=(detail + " | " if detail else "")
+                           + "%s: %s" % (type(exc).__name__, exc))
         raise
-    _audit_worker_call(command, pid=pid, port=port, arguments=arguments, outcome="allowed")
+    _audit_worker_call(command, pid=pid, port=port, arguments=arguments,
+                       outcome="allowed", detail=detail)
     if not isinstance(result, dict):
         raise TypeError(f"AEDT worker command {command} returned a non-object result")
     return result
@@ -266,6 +273,40 @@ async def check_aedt_status(
 async def guard_status() -> dict[str, Any]:
     """Report guard-launched AEDT sessions and flag unmanaged AEDT processes."""
     scan = await asyncio.to_thread(managed_sessions.scan_aedt_processes)
+    try:
+        from aedt_guard.builders import allowlist_path, load_allowlist
+
+        path = allowlist_path()
+        try:
+            allowlist = load_allowlist(path)
+            from aedt_guard.builders import writable_by_current_user
+
+            scripts = []
+            for builder_id, entry in allowlist["builders"].items():
+                script = entry.get("script") if isinstance(entry, dict) else None
+                if isinstance(script, str):
+                    scripts.append({
+                        "builder_id": builder_id,
+                        "script": script,
+                        "writable_by_current_user": writable_by_current_user(script),
+                    })
+            builders = {
+                "allowlist": str(path),
+                "exists": True,
+                "ids": sorted(allowlist["builders"]),
+                "allowlist_writable_by_current_user": writable_by_current_user(path),
+                "scripts": scripts[:50],
+                "warning": "allowlist/scripts are same-user integrity controls, not an OS sandbox",
+            }
+        except Exception as exc:  # noqa: BLE001
+            builders = {
+                "allowlist": str(path),
+                "exists": path.exists(),
+                "error": str(exc)[:300],
+                "warning": "allowlist unavailable; run_approved_builder will refuse",
+            }
+    except Exception:  # noqa: BLE001 - status must not fail
+        builders = {"warning": "builder allowlist status unavailable"}
     return {
         "guard": "ansys-aedt-mcp",
         "allow_unmanaged": managed_sessions.allow_unmanaged(),
@@ -280,6 +321,7 @@ async def guard_status() -> dict[str, Any]:
         "scan": scan,
         "audit": _audit_health(),
         "state_dir": str(managed_sessions.state_dir()),
+        "builders": builders,
     }
 
 
@@ -481,6 +523,159 @@ async def run_python_script(
         arguments={"script_path": script_path},
         timeout=timeout,
     )
+
+
+@mcp.tool()
+async def run_approved_builder(
+    builder_id: str,
+    project_path: str,
+    outdir: str,
+    params: dict[str, Any] | None = None,
+    pid: int | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Run one operator-approved builder entrypoint with typed parameters.
+
+    The builder allowlist (path + SHA-256 + parameter schema + output roots) is an operator-side
+    integrity control, not an OS sandbox. The executed code is assembled/verified by the guard from
+    the approved entry; the agent supplies only validated primitive parameters. This is the
+    autonomous path for repeated modelling runs: no per-run arbitrary-code opt-in is needed.
+
+    If no explicit PID/port is given the tool launches a managed AEDT session, which the caller can
+    reuse for subsequent builder/solve calls. The source project is copied to a uniquely named
+    working file under ``outdir/_work/<uuid>/`` so the original is never modified.
+    """
+    import shutil
+    import time
+    import uuid
+
+    from aedt_guard.builders import (
+        BuilderError,
+        get_builder,
+        load_allowlist,
+        validate_output_dir,
+        validate_params,
+        validate_project,
+    )
+
+    started = time.time()
+    audit_args = {"builder_id": builder_id, "params": params or {}, "outdir": outdir}
+    try:
+        allowlist = load_allowlist()
+        entry = get_builder(allowlist, builder_id)
+        cleaned = validate_params(entry, params)
+        final_outdir = validate_output_dir(entry, outdir)
+        final_project = validate_project(project_path)
+        for candidate, label in ((final_project, "project_path"), (final_outdir, "outdir")):
+            _reject_guard_state_path(candidate, label)
+    except (BuilderError, ValueError, OSError) as exc:
+        _audit_worker_call(
+            "run_approved_builder", pid=pid, port=port,
+            arguments=audit_args, outcome="refused",
+            detail=("allowlist/params/path refused: %s" % exc)[:500],
+        )
+        return {"refused": True, "builder_id": builder_id, "reason": str(exc)}
+
+    work_root = Path(final_outdir) / "_work"
+    work_dir = work_root / uuid.uuid4().hex
+    retain_work = False
+    launched: dict[str, Any] | None = None
+    launched_pid: int | None = None
+    try:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        # Unique stem: PyAEDT matches an already-open project by file stem, so a copy that keeps
+        # the original name could silently attach to and mutate the original project.
+        working_name = "p0work_%s_%s" % (uuid.uuid4().hex, Path(final_project).name)
+        working_project = work_dir / working_name
+        shutil.copy2(final_project, working_project)
+        if pid is None and port is None:
+            launched = await launch_aedt(non_graphical=True)
+            launched_pid = int(launched["pid"])
+            pid = launched_pid
+            port = None
+
+        detail = json.dumps(
+            {"builder_id": builder_id, "script_sha256": entry["sha256"],
+             "params": cleaned, "outdir": final_outdir},
+            ensure_ascii=False, sort_keys=True,
+        )[:500]
+        result = await _worker_call(
+            "run_approved_builder",
+            pid=pid,
+            port=port,
+            arguments={
+                "builder_id": builder_id,
+                "params": cleaned,
+                "project_path": str(working_project),
+                "outdir": final_outdir,
+            },
+            timeout=timeout if timeout is not None else 1800.0,
+            detail=detail,
+        )
+        result["builder"] = builder_id
+        result["params"] = cleaned
+        result["requested_project"] = final_project
+        result["working_project"] = str(working_project)
+        if launched is not None:
+            result["launched_session"] = {
+                "pid": launched.get("pid"),
+                "port": launched.get("port"),
+                "managed": launched.get("managed"),
+            }
+        saved = None
+        inner = result.get("result")
+        if isinstance(inner, dict):
+            saved = inner.get("saved")
+        if isinstance(saved, str) and saved.lower().endswith(".aedt"):
+            saved_path = Path(saved)
+            if not saved_path.is_file():
+                result["artifact_warning"] = "builder reported a saved artifact that does not exist"
+        artifacts = []
+        for path in Path(final_outdir).rglob("*"):
+            try:
+                if path == work_dir or work_dir in path.parents:
+                    continue
+                if path.is_file() and path.stat().st_mtime >= started - 2:
+                    artifacts.append(str(path))
+            except OSError:
+                continue
+        result["artifacts"] = artifacts[:100]
+        if not artifacts:
+            result["artifact_warning"] = "no new artifact appeared under outdir during the run"
+        return result
+    except asyncio.CancelledError:
+        # The client/tool cancellation does not prove the worker stopped; keep the working copy.
+        _audit_worker_call(
+            "run_approved_builder", pid=pid, port=port,
+            arguments=audit_args, outcome="refused",
+            detail="builder cancelled by client; working copy retained for the running worker",
+        )
+        raise
+    except Exception as exc:  # noqa: BLE001 - report + cleanup
+        if isinstance(exc, TimeoutError):
+            retain_work = True
+        _audit_worker_call(
+            "run_approved_builder", pid=pid, port=port,
+            arguments=audit_args, outcome="refused",
+            detail=("builder execution failed: %s: %s" % (type(exc).__name__, exc))[:500],
+        )
+        if launched_pid is not None:
+            try:
+                await asyncio.wait_for(
+                    disconnect_from_aedt(pid=launched_pid, close_desktop=True),
+                    timeout=15.0,
+                )
+            except Exception:  # noqa: BLE001 - cleanup best effort; do not block the tool
+                pass
+        raise
+    finally:
+        if not retain_work:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                work_root.rmdir()
+            except OSError:
+                pass
 
 
 @mcp.tool()

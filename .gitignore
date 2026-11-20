@@ -8,3 +8,5 @@ test-artifacts/
 .aedt-hardening-backups/
 
 tmp*/
+
+builders.local.json

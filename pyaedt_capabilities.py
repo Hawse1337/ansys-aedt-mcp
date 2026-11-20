@@ -61,6 +61,7 @@ OFFICIAL_BACKEND_COMMANDS = {
     "get_pyaedt_logs",
     "run_python_script",
     "run_python_code",
+    "run_approved_builder",
     "list_designs",
     "list_projects",
     "open_project",
@@ -791,6 +792,137 @@ class OfficialCapabilities:
             "target": self._target(target),
             "executed": True,
             "result": self._exec_globals.get("result"),
+            "stdout": stdout.getvalue(),
+            "stderr": stderr.getvalue(),
+        }
+
+    def _run_approved_builder(self, desktop, target, arguments, connection_kwargs):
+        """Execute one operator-approved builder entrypoint with typed parameters.
+
+        The worker loads the allowlist itself, reads the approved script bytes once, hashes those
+        exact bytes and executes the compiled module; the caller cannot supply script path, hash or
+        entrypoint. During execution the attach-only wrapper stays active, and the active project
+        must remain inside the approved working/output roots.
+        """
+        import contextlib
+        import types
+        from io import StringIO
+
+        from aedt_guard.builders import (
+            get_builder,
+            load_allowlist,
+            sha256_bytes,
+            validate_output_dir,
+            validate_params,
+            validate_project,
+        )
+
+        builder_id = _required_text(arguments, "builder_id")
+        entry = get_builder(load_allowlist(), builder_id)
+        params = validate_params(entry, arguments.get("params"))
+        project = validate_project(_required_text(arguments, "project_path"))
+        outdir = validate_output_dir(entry, _required_text(arguments, "outdir"))
+        script = Path(entry["script"]).expanduser().resolve()
+        data = script.read_bytes()
+        actual = sha256_bytes(data)
+        if actual != entry["sha256"].lower():
+            raise CapabilityError(
+                "builder script bytes changed after allowlist verification (expected %s, actual %s)"
+                % (entry["sha256"], actual)
+            )
+        module = types.ModuleType("guard_approved_builder")
+        module.__file__ = str(script)
+        exec(compile(data, str(script), "exec"), module.__dict__)  # noqa: S102 - allowlisted bytes
+        entrypoint = entry["entrypoint"]
+        function = getattr(module, entrypoint, None)
+        if not callable(function):
+            raise CapabilityError("approved builder entrypoint is not callable: %s" % entrypoint)
+
+        wrapper = contextlib.nullcontext()
+        if hasattr(desktop, "is_grpc_api"):
+            if not desktop.is_grpc_api:
+                raise CapabilityError(
+                    "approved builders require a verified gRPC desktop (COM attach cannot be guarded)"
+                )
+            from pyaedt_backend import (  # noqa: PLC0415 - avoid import cycle at module load
+                _attach_only_desktop,
+                _audited_desktop_module,
+                _existing_target_owner,
+            )
+
+            expected_pid, expected_started = _existing_target_owner(
+                {"new_desktop": False, "port": desktop.port}
+            )
+            wrapper = _attach_only_desktop(
+                _audited_desktop_module(),
+                {"new_desktop": False, "port": desktop.port},
+                verified_owner=(expected_pid, expected_started),
+                grpc_port_hint=desktop.port,
+            )
+
+        stdout = StringIO()
+        stderr = StringIO()
+        with wrapper:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = function(
+                    port=getattr(desktop, "port", None),
+                    project=project,
+                    outdir=outdir,
+                    **params,
+                )
+
+        # The build must not have attached/opened a project outside the working/output roots.
+        active_path = None
+        try:
+            getter = getattr(desktop, "active_project_name", None)
+            name = getter() if callable(getter) else getter
+            path_getter = getattr(desktop, "project_path", None)
+            if name and callable(path_getter):
+                active_path = path_getter(name)
+        except Exception:  # noqa: BLE001 - post-check is best effort on vendor quirks
+            active_path = None
+        allowed_dirs = [Path(project).resolve().parent, Path(outdir).resolve()]
+
+        def _contained(candidate: str | None) -> bool:
+            if not candidate:
+                return True
+            try:
+                resolved = Path(str(candidate)).resolve()
+            except OSError:
+                return False
+            return any(resolved == root or root in resolved.parents for root in allowed_dirs)
+
+        if active_path and not _contained(active_path):
+            raise CapabilityError(
+                "approved builder opened a project outside the approved roots: %s" % active_path
+            )
+        # A builder can open more than one project; verify every open project path, not only active.
+        try:
+            names = getattr(desktop, "project_list", None)
+            names = names() if callable(names) else names
+            path_getter = getattr(desktop, "project_path", None)
+            if isinstance(names, (list, tuple)) and callable(path_getter):
+                for name in names:
+                    candidate = path_getter(name)
+                    if not _contained(candidate):
+                        raise CapabilityError(
+                            "approved builder has a project open outside the approved roots: %s"
+                            % candidate
+                        )
+        except CapabilityError:
+            raise
+        except Exception:  # noqa: BLE001 - vendor quirks; active-project check still applies
+            pass
+
+        return {
+            "target": self._target(target),
+            "builder_id": builder_id,
+            "script": str(script),
+            "script_sha256": actual,
+            "project": project,
+            "outdir": outdir,
+            "executed": True,
+            "result": result,
             "stdout": stdout.getvalue(),
             "stderr": stderr.getvalue(),
         }

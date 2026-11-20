@@ -23,8 +23,13 @@ mcp__aedt__guard_status
 mcp__aedt__launch_aedt
 mcp__aedt__connect_to_aedt
 mcp__aedt__run_python_code   (refused by default; operator opt-in only)
+mcp__aedt__run_approved_builder  (allowlisted builder + typed params; autonomous path)
 ...
 ```
+
+`run_python_code` / `run_python_script` are **disabled by default**. For repeated modelling, use
+`run_approved_builder` with an operator allowlist (script hash + typed params + output roots); it
+is the autonomous path and needs no per-run code opt-in. See docs/BUILDERS.md.
 
 `run_python_code` / `run_python_script` are **disabled by default**. Enable them only for a
 supervised session (`AEDT_MCP_ALLOW_ARBITRARY_CODE=1`); an autonomous loop should use the
