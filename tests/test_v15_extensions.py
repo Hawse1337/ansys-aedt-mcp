@@ -263,10 +263,16 @@ class AnalyzeEvidenceFieldsTests(unittest.TestCase):
     def test_analyze_adds_only_evidence_fields(self):
         class SolvedSetup:
             name = "Setup1"
-            is_solved = True
+            is_solved = False
 
         app = FakeApp(solved=True)
         app.setup_objs = [SolvedSetup()]
+
+        def solve_immediately(**kwargs):
+            app.setup_objs[0].is_solved = True
+            return True
+
+        app.analyze_setup = solve_immediately
 
         def app_resolver(**kwargs):
             return app
@@ -288,7 +294,7 @@ class AnalyzeEvidenceFieldsTests(unittest.TestCase):
         new_keys = {"ff_sphere_present", "solution_data_present_before_submit"}
         self.assertTrue(new_keys.issubset(set(result.keys())))
         self.assertTrue(result["ff_sphere_present"])
-        self.assertTrue(result["solution_data_present_before_submit"])
+        self.assertFalse(result["solution_data_present_before_submit"])
         self.assertFalse(result["solver_completion_confirmed"])
         self.assertFalse(result["convergence_confirmed"])
 

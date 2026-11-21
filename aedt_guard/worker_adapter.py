@@ -140,15 +140,16 @@ class GuardedAdapter:
             time.sleep(poll_interval_s)
 
     def finalize(self) -> dict[str, Any]:
-        # Probe only the setup this run was told to solve: a reused project may
+        # Probe only setups this run was told to solve: a reused project may
         # contain other setups/sweeps that belong to different experiments, and
         # their absence of solution data must not fail this run.
         arguments: dict[str, Any] = {
             "project_name": self.project_name,
             "design_name": self.design_name,
         }
-        if self.setup_name:
-            arguments["setups"] = [self.setup_name]
+        names = [name for name in [self.setup_name, *self.extra_setups] if name]
+        if names:
+            arguments["setups"] = list(dict.fromkeys(names))
         return self._call("finalize_solve", arguments)
 
     def export_touchstone(self, path: Path) -> dict[str, Any]:

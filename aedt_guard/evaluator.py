@@ -27,7 +27,7 @@ def read_touchstone(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     target = Path(path)
     if not target.is_file():
         raise ArtifactError(f"touchstone not found: {target}")
-    unit_scale = 1e-9  # default GHz
+    unit_scale = 1.0  # Touchstone default is GHz
     data_format = "MA"
     freqs: list[float] = []
     s11: list[float] = []
@@ -55,14 +55,17 @@ def read_touchstone(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
             second = float(parts[2])
         except (IndexError, ValueError):
             continue
+        if not all(math.isfinite(value) for value in (freq, first, second)):
+            raise ArtifactError(f"non-finite S-parameter data in {target}")
         if data_format == "RI":
             magnitude = abs(complex(first, second))
+            level = 20.0 * math.log10(max(magnitude, 1e-12))
         elif data_format == "DB":
-            magnitude = 10 ** (first / 20.0)
+            level = max(first, -240.0)
         else:
-            magnitude = abs(first * np.exp(1j * math.radians(second)))
+            level = 20.0 * math.log10(max(abs(first), 1e-12))
         freqs.append(freq * unit_scale)
-        s11.append(float(20.0 * np.log10(max(magnitude, 1e-12))))
+        s11.append(level)
     if not freqs:
         raise ArtifactError(f"no S-parameter rows in {target}")
     order = np.argsort(freqs)
@@ -92,10 +95,14 @@ def read_curve_csv(
     ys: list[float] = []
     for row in rows:
         try:
-            xs.append(float(row[x_key]))
-            ys.append(float(row[y_key]))
+            x = float(row[x_key])
+            y = float(row[y_key])
         except (TypeError, ValueError):
             continue
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ArtifactError(f"non-finite curve data in {target}")
+        xs.append(x)
+        ys.append(y)
     if not xs:
         raise ArtifactError(f"no numeric rows in {target}")
     return np.asarray(xs), np.asarray(ys)
@@ -311,13 +318,50 @@ def s11_bandwidth(freqs_ghz, s11_db, target_db: float, band: tuple[float, float]
     }
 
 
-def _constraint_value(kind: str, metrics: dict[str, Any], freq_key: str) -> float | None:
-    """Per-frequency value of one metric kind, for the effective-bandwidth pass test."""
-    if kind == "s11":
-        return metrics.get("s11_freq", {}).get(freq_key)
-    payload = metrics.get(kind) or {}
-    per_frequency = payload.get("per_frequency") or {}
-    return per_frequency.get(freq_key)
+def _verify_frequency_coverage(artifacts: dict[str, Any], spec: dict[str, Any]) -> None:
+    requested = artifacts.get("requested_frequencies_ghz")
+    evaluation = spec.get("evaluation") or {}
+    if not requested and (evaluation.get("frequencies_ghz") or evaluation.get("frequency_sampling")):
+        from .spec import resolve_frequencies
+        requested = resolve_frequencies(spec)
+    if not requested:
+        return
+    measured = list(artifacts.get("farfield") or {})
+    if not measured and artifacts.get("frequency_ghz") is not None:
+        measured = [artifacts["frequency_ghz"]]
+    # The worker exports labels with %g. If two requested points share a
+    # label, the files cannot certify separate measurements.
+    expected_keys = {f"{float(f):g}" for f in requested}
+    try:
+        measured_keys = {f"{float(f):g}" for f in measured}
+    except (TypeError, ValueError) as exc:
+        raise ArtifactError(f"invalid far-field frequency labels: {measured}") from exc
+    if (expected_keys != measured_keys or len(measured_keys) != len(measured)
+            or len(expected_keys) != len(set(requested))):
+        raise ArtifactError(f"far-field frequencies differ: requested {requested}, exported {measured}")
+
+
+def _check_constraints(result: dict[str, Any], spec: dict[str, Any],
+                       frequency_keys: Iterable[str] | None = None) -> dict[str, Any]:
+    """Every required measurement must support the declared constraint."""
+    for metric in spec.get("metrics", []):
+        kind = metric["kind"]
+        payload = result["metrics"].get(kind, {})
+        if frequency_keys is not None and kind not in {"s11", "s11_bandwidth", "effective_bandwidth"}:
+            measured = payload.get("per_frequency", {})
+            values = [measured.get(key) for key in frequency_keys]
+        else:
+            values = [payload.get("worst_db" if kind == "s11" else "value")]
+        passed = bool(values) and all(
+            value is not None and math.isfinite(value)
+            and _compare(value, metric["operator"], float(metric["target"]))
+            for value in values
+        )
+        result["hard"][metric["id"]] = passed
+        if metric.get("hard", True) and not passed:
+            result["unmet"].append(metric["id"])
+    result["feasible"] = result["invalid"] is None and not result["unmet"]
+    return result
 
 
 def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
@@ -341,11 +385,14 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
         result["feasible"] = False
         return result
     try:
+        _verify_frequency_coverage(artifacts, spec)
         freqs, s11_db = read_touchstone(artifacts["s11"])
         s11_info = s11_band(freqs, s11_db, band)
         per_frequency: dict[str, Any] = {}
         for label, paths in sorted(farfield.items(), key=lambda item: float(item[0])):
             gain_freq = float(label)
+            if not paths.get("theta"):
+                raise ArtifactError(f"missing theta cut at {gain_freq:g} GHz")
             theta, gain = read_curve_csv(paths["theta"])
             peak, peak_theta = peak_and_beam(theta, gain)
             horizontal = horizontal_level(theta, gain, theta_deg=horiz_theta)
@@ -507,25 +554,7 @@ def evaluate_frequencies(artifacts: dict[str, Any], spec: dict[str, Any]) -> dic
             "per_frequency": {k: v["sll"] for k, v in per_frequency.items() if not math.isnan(v["sll"])},
         }
 
-    for metric in spec.get("metrics", []):
-        kind = metric["kind"]
-        if kind not in result["metrics"]:
-            continue
-        if kind == "s11":
-            value = result["metrics"]["s11"]["worst_db"]
-        else:
-            value = result["metrics"][kind]["value"]
-            if kind == "sll" and math.isnan(value):
-                result["hard"][metric["id"]] = False
-                if metric.get("hard", True):
-                    result["unmet"].append(metric["id"])
-                continue
-        passed = _compare(float(value), metric["operator"], float(metric["target"]))
-        result["hard"][metric["id"]] = passed
-        if not passed and metric.get("hard", True):
-            result["unmet"].append(metric["id"])
-    result["feasible"] = not result["unmet"]
-    return result
+    return _check_constraints(result, spec, per_frequency)
 
 
 def evaluate(artifacts: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
@@ -549,6 +578,7 @@ def evaluate(artifacts: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
 
     result: dict[str, Any] = {"metrics": {}, "hard": {}, "unmet": [], "invalid": None}
     try:
+        _verify_frequency_coverage(artifacts, spec)
         freqs, s11_db = read_touchstone(artifacts["s11"])
         s11_info = s11_band(freqs, s11_db, band)
         result["metrics"]["s11"] = s11_info
@@ -560,6 +590,8 @@ def evaluate(artifacts: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
             str(phi): read_curve_csv(path)
             for phi, path in (artifacts.get("theta_cuts") or {}).items()
         }
+        if not theta_cuts:
+            raise ArtifactError("missing theta cuts")
         primary_phi = str(int(evaluation.get("theta_cut_phi_deg", [0])[0]))
         theta, gain = theta_cuts.get(primary_phi) or next(iter(theta_cuts.values()))
         peak, peak_theta = peak_and_beam(theta, gain)
@@ -583,23 +615,4 @@ def evaluate(artifacts: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:
         result["feasible"] = False
         return result
 
-    for metric in spec.get("metrics", []):
-        kind = metric["kind"]
-        if kind not in result["metrics"]:
-            continue
-        if kind == "s11":
-            value = result["metrics"]["s11"]["worst_db"]
-        else:
-            value = result["metrics"][kind]["value"]
-            if kind == "sll" and math.isnan(value):
-                result["unmet"].append({"id": metric["id"], "reason": "sll not computable"})
-                if metric.get("hard", True):
-                    result["hard"][metric["id"]] = False
-                continue
-        passed = _compare(float(value), metric["operator"], float(metric["target"]))
-        result["hard"][metric["id"]] = passed
-        if not passed and metric.get("hard", True):
-            result["unmet"].append(metric["id"])
-
-    result["feasible"] = (result["invalid"] is None) and not result["unmet"]
-    return result
+    return _check_constraints(result, spec)

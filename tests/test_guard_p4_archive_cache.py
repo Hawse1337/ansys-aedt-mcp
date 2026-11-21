@@ -140,6 +140,16 @@ class ConvergenceGateTests(unittest.TestCase):
         status, _ = self._run(ConvergenceAdapter(assessment="inconclusive", native=True))
         self.assertEqual(status, "COMPLETED")
 
+    def test_not_converged_is_not_overridden_by_native_yes(self):
+        status, _ = self._run(ConvergenceAdapter(assessment="not_converged", native=True))
+        self.assertEqual(status, FAILED)
+
+    def test_missing_convergence_exporter_fails_when_required(self):
+        adapter = ConvergenceAdapter()
+        adapter.export_convergence = None
+        status, _ = self._run(adapter)
+        self.assertEqual(status, FAILED)
+
     def test_converged_completes_and_records_evidence(self):
         status, _ = self._run(ConvergenceAdapter())
         self.assertEqual(status, "COMPLETED")
@@ -263,8 +273,12 @@ class CacheTests(unittest.TestCase):
             phi = Path(arguments["output_dir"]) / "p.csv"
             _write_theta(theta)
             _write_phi(phi)
-            return {"cuts": {"theta_phi0": {"path": str(theta)},
-                             "phi_theta90": {"path": str(phi)}}}
+            cuts = {}
+            for freq in arguments.get("frequencies_ghz") or [None]:
+                suffix = "" if freq is None else f"@{freq:g}GHz"
+                cuts["theta_phi0" + suffix] = {"path": str(theta)}
+                cuts["phi_theta90" + suffix] = {"path": str(phi)}
+            return {"cuts": cuts}
         raise AssertionError(f"unexpected command: {command}")
 
     def _wait_terminal(self, run_id):

@@ -191,7 +191,7 @@ class CampaignRunner:
             self._fail(FAILED, f"preflight failed: {exc}")
             return FAILED
         self._stage("PREPARED", **{k: pre.get(k) for k in ("validation_passed", "ff_sphere_present")})
-        if not pre.get("validation_passed", True):
+        if pre.get("validation_passed") is not True:
             self._fail(FAILED, "preflight validation failed")
             return FAILED
 
@@ -200,7 +200,10 @@ class CampaignRunner:
         except Exception as exc:  # noqa: BLE001
             self._fail(FAILED, f"submit failed: {exc}")
             return FAILED
-        self._stage("SOLVING", started=bool(submitted.get("started")))
+        if submitted.get("started") is not True:
+            self._fail(FAILED, "primary solve submission was not accepted")
+            return FAILED
+        self._stage("SOLVING", started=True)
 
         try:
             waited = self.adapter.wait(
@@ -211,7 +214,7 @@ class CampaignRunner:
             self._fail(RECOVERY_REQUIRED, f"wait failed: {exc}")
             return RECOVERY_REQUIRED
         if waited.get("timed_out"):
-            if budget_exceeded():
+            if budget_exceeded() or (budget_s is not None and budget_s < self.timeout_s):
                 self._abort_and_fail(
                     f"BUDGET_EXCEEDED: run exceeded max_run_minutes="
                     f"{policy.get('max_run_minutes')} and was stopped"
@@ -229,13 +232,15 @@ class CampaignRunner:
                 f"{policy.get('max_run_minutes')} before post-processing"
             )
             return FAILED
-        self._stage("SOLVED", poll_count=waited.get("poll_count"))
         extra = list(getattr(self.adapter, "extra_setups", None) or [])
         if extra:
             self._stage("SOLVING_EXTRA", setups=extra)
             for name in extra:
                 try:
-                    self.adapter.analyze_setup(name)
+                    extra_submit = self.adapter.analyze_setup(name)
+                    if extra_submit.get("started") is not True:
+                        self._fail(FAILED, f"extra setup {name!r} submission was not accepted")
+                        return FAILED
                     extra_wait = self.adapter.wait_setup(
                         name, self.timeout_s, self.poll_interval_s
                     )
@@ -254,6 +259,7 @@ class CampaignRunner:
                     f"{policy.get('max_run_minutes')}"
                 )
                 return FAILED
+        self._stage("SOLVED", poll_count=waited.get("poll_count"))
         return self._finish()
 
     def resume(self, last_stage: str | None = None) -> str:
@@ -276,6 +282,12 @@ class CampaignRunner:
             prior = []
         if isinstance(prior, list) and prior:
             self.stage_log = prior
+        if status not in {"SOLVING", "SOLVED", "EXPORTING", "VALIDATING"}:
+            self._fail(RECOVERY_REQUIRED, f"cannot verify solve submissions from stage {status!r}")
+            return RECOVERY_REQUIRED
+        if status == "SOLVING" and getattr(self.adapter, "extra_setups", None):
+            self._fail(RECOVERY_REQUIRED, "additional setup submissions were not confirmed")
+            return RECOVERY_REQUIRED
         return self._finish(resumed_from=status)
 
     def _finish(self, resumed_from: str | None = None) -> str:
@@ -285,10 +297,14 @@ class CampaignRunner:
         except Exception as exc:  # noqa: BLE001
             self._fail(RECOVERY_REQUIRED, f"finalize failed (project may be unsaved): {exc}")
             return RECOVERY_REQUIRED
-        if not final.get("saved"):
+        if final.get("saved") is not True:
             self._fail(RECOVERY_REQUIRED, "project was not saved after the solve")
             return RECOVERY_REQUIRED
-        if final.get("solution_data_complete") is False:
+        if final.get("solution_data_complete") is not True and not final.get("incomplete_setups"):
+            self._fail(RECOVERY_REQUIRED, "solution data presence could not be confirmed",
+                       unverified_setups=final.get("unverified_setups") or [])
+            return RECOVERY_REQUIRED
+        if final.get("solution_data_complete") is not True:
             self._fail(FAILED, "solution data missing for: "
                        + ", ".join(final.get("incomplete_setups") or []))
             return FAILED
@@ -300,30 +316,24 @@ class CampaignRunner:
         require_convergence = bool(policy.get("require_convergence", True))
         convergence_evidence: dict[str, Any] | None = None
         if require_convergence:
-            exporter = getattr(self.adapter, "export_convergence", None)
-            if callable(exporter):
-                try:
-                    convergence = exporter(self.artifact_dir / "convergence.conv")
-                except Exception as exc:  # noqa: BLE001
-                    self._fail(FAILED, f"convergence export failed (E_NOT_CONVERGED): {exc}")
-                    return FAILED
-                evidence = (
-                    convergence.get("evidence")
-                    or convergence.get("evidence_summary")
-                    or {}
-                )
-                convergence_evidence = evidence
+            try:
+                convergence = self.adapter.export_convergence(self.artifact_dir / "convergence.conv")
+                evidence = convergence.get("evidence") or convergence.get("evidence_summary") or {}
                 assessment = str(evidence.get("assessment") or "").lower()
                 native = evidence.get("native_converged")
-                if assessment != "converged" and native is not True:
-                    self._fail(
-                        FAILED,
-                        "adaptive convergence was not proven for this solve "
-                        f"(assessment={assessment or 'missing'}, native={native}); "
-                        "E_NOT_CONVERGED",
-                    )
-                    return FAILED
+            except Exception as exc:
+                self._fail(FAILED, f"convergence export failed (E_NOT_CONVERGED): {exc}")
+                return FAILED
+            if (assessment == "not_converged" or native is False
+                    or (assessment != "converged" and native is not True)):
+                self._fail(FAILED, "adaptive convergence was not proven for this solve "
+                           f"(assessment={assessment or 'missing'}, native={native}); "
+                           "E_NOT_CONVERGED")
+                return FAILED
+            convergence_evidence = evidence
         artifacts: dict[str, Any] = {}
+        if self.frequencies:
+            artifacts["requested_frequencies_ghz"] = self.frequencies
         if self.frequency_ghz is not None:
             artifacts["frequency_ghz"] = float(self.frequency_ghz)
         try:
@@ -438,6 +448,9 @@ class CampaignRunner:
             result = evaluator(artifacts, self.spec)
         except Exception as exc:  # noqa: BLE001
             self._fail(FAILED, f"evaluation failed: {exc}")
+            return FAILED
+        if result.get("invalid") is not None:
+            self._fail(FAILED, f"invalid evaluation artifacts: {result['invalid']}", artifacts=artifacts)
             return FAILED
         self.store.add_metrics(self.run_id, named_metrics(result, self.spec),
                                hard_results(result, self.spec))

@@ -809,19 +809,28 @@ class OfficialCapabilities:
         from io import StringIO
 
         from aedt_guard.builders import (
-            get_builder,
-            load_allowlist,
-            sha256_bytes,
-            validate_output_dir,
-            validate_params,
-            validate_project,
+            BuilderError, approval_required, approved_once, prepare_request, request_id,
+            sha256_bytes, sha256_file, validate_project,
         )
 
         builder_id = _required_text(arguments, "builder_id")
-        entry = get_builder(load_allowlist(), builder_id)
-        params = validate_params(entry, arguments.get("params"))
+        session = arguments.get("requested_session")
+        if session not in ({"kind": target.kind, "value": target.value}, {"kind": "managed_launch"}):
+            raise CapabilityError("builder session does not match target")
+        try:
+            entry, request, deviations = prepare_request(
+                builder_id, arguments.get("source_project"), arguments.get("outdir"),
+                arguments.get("params"), session)
+        except (BuilderError, ValueError, OSError) as exc:
+            return approval_required(builder_id, str(exc))
+        if request_id(request) != arguments.get("request_id"):
+            return approval_required(builder_id, "builder policy or request changed; review and retry")
         project = validate_project(_required_text(arguments, "project_path"))
-        outdir = validate_output_dir(entry, _required_text(arguments, "outdir"))
+        outdir, params = request["outdir"], request["params"]
+        work_root = Path(outdir) / "_work"
+        if (work_root not in Path(project).parents or Path(project) == Path(request["project_path"])
+                or sha256_file(project) != request["project_sha256"]):
+            raise CapabilityError("working copy does not match the approved source")
         script = Path(entry["script"]).expanduser().resolve()
         data = script.read_bytes()
         actual = sha256_bytes(data)
@@ -830,14 +839,6 @@ class OfficialCapabilities:
                 "builder script bytes changed after allowlist verification (expected %s, actual %s)"
                 % (entry["sha256"], actual)
             )
-        module = types.ModuleType("guard_approved_builder")
-        module.__file__ = str(script)
-        exec(compile(data, str(script), "exec"), module.__dict__)  # noqa: S102 - allowlisted bytes
-        entrypoint = entry["entrypoint"]
-        function = getattr(module, entrypoint, None)
-        if not callable(function):
-            raise CapabilityError("approved builder entrypoint is not callable: %s" % entrypoint)
-
         wrapper = contextlib.nullcontext()
         if hasattr(desktop, "is_grpc_api"):
             if not desktop.is_grpc_api:
@@ -864,6 +865,16 @@ class OfficialCapabilities:
         stderr = StringIO()
         with wrapper:
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                if deviations and not approved_once(request, consume=True):
+                    return approval_required(builder_id, "; ".join(deviations), request)
+                module = types.ModuleType("guard_approved_builder")
+                module.__file__ = str(script)
+                exec(compile(data, str(script), "exec"), module.__dict__)  # noqa: S102 - allowlisted bytes
+                entrypoint = entry["entrypoint"]
+                function = getattr(module, entrypoint, None)
+                if not callable(function):
+                    raise CapabilityError("approved builder entrypoint is not callable: %s" % entrypoint)
+
                 result = function(
                     port=getattr(desktop, "port", None),
                     project=project,
@@ -1091,6 +1102,22 @@ class OfficialCapabilities:
             )
         if setup_readback["applicable"] and not setup_readback["readback_confirmed"]:
             submission_warnings.append("Native HFSS solver/frequency readback was incomplete; inspect the setup and native profile.")
+        solution_data_present_before_submit: bool | None = None
+        if setup_name:
+            try:
+                known = []
+                for setup_obj in (getattr(app, "setups", None) or []):
+                    if str(getattr(setup_obj, "name", "")) != str(setup_name):
+                        continue
+                    solved = getattr(setup_obj, "is_solved", None)
+                    if solved is not None:
+                        known.append(bool(solved))
+                if known:
+                    solution_data_present_before_submit = any(known)
+            except Exception:
+                # vendor internals can raise KeyError('HFSS Terminal Network') for
+                # Terminal/mixed designs; keep the evidence field inconclusive.
+                solution_data_present_before_submit = None
         submitted_at_utc = datetime.now(timezone.utc).isoformat()
         if solve_in_batch:
             # Batch solve closes and reopens the .aedt file, so it needs a saved
@@ -1135,22 +1162,6 @@ class OfficialCapabilities:
                 ff_sphere_present = bool(len(field_setups))
         except Exception:
             ff_sphere_present = None
-        solution_data_present_before_submit: bool | None = None
-        if setup_name:
-            try:
-                known = []
-                for setup_obj in (getattr(app, "setups", None) or []):
-                    if str(getattr(setup_obj, "name", "")) != str(setup_name):
-                        continue
-                    solved = getattr(setup_obj, "is_solved", None)
-                    if solved is not None:
-                        known.append(bool(solved))
-                if known:
-                    solution_data_present_before_submit = any(known)
-            except Exception:
-                # vendor internals can raise KeyError('HFSS Terminal Network') for
-                # Terminal/mixed designs; keep the evidence field inconclusive.
-                solution_data_present_before_submit = None
         return {
             "target": self._target(target),
             "started": started,

@@ -22,6 +22,10 @@ The operator creates `builders.local.json` next to the guard (or sets `AEDT_GUAR
       "script": "C:\\ProgramData\\ansys-aedt-mcp\\approved\\p0_model.py",
       "sha256": "<sha256 of the script>",
       "entrypoint": "run",
+      "targets": [
+        {"project_path": "C:/campaign/templates/baseline.aedt",
+         "project_sha256": "<SHA-256 of baseline.aedt>", "design": "Trunc_10GHz"}
+      ],
       "params": {
         "theta_deg": {"type": "number", "min": 0, "max": 60, "required": true},
         "family": {"type": "enum", "values": ["A", "B"], "required": true},
@@ -50,7 +54,7 @@ run_approved_builder(
     builder_id="p0_model",
     project_path=<existing .aedt>,
     outdir=<directory under output_roots>,
-    params={"theta_deg": 20.6, "family": "A", "feed": "ideal", ...},
+    params={"design": "Trunc_10GHz", "theta_deg": 20.6, "family": "A", "feed": "ideal", ...},
     pid/port=<optional existing managed AEDT>,
 ) -> {result, stdout, artifacts, builder, ...}
 ```
@@ -66,6 +70,45 @@ run_approved_builder(
 - Every run is audited (`run_approved_builder`, builder id, param digest, refusal/success).
 - The attach-only wrapper stays active while the builder executes; the active project must remain
   inside the working/output roots.
+
+## Target-bound approvals and migration
+
+Each builder takes the named `design` argument and must select that exact design
+in the supplied working project. For an existing allowlist, add one `targets`
+row per reviewed source project and design. Obtain the template hash with
+`Get-FileHash -Algorithm SHA256 -LiteralPath <template.aedt>`. A changed template
+has a different identity. An entry missing the target list returns
+`status="approval_required"` until the operator configures its scope.
+
+An ordinary request inside the approved scope executes automatically. When a
+typed value exceeds an approved range or enum, or the source template or design
+differs, the guard returns `approval_mode="once"`, the complete `request`, and
+its `request_id`. Save the whole returned JSON object as a local file. In a
+trusted operator terminal with the same policy and state directories, run:
+
+```powershell
+python scripts/approve_builder_request.py request.json
+```
+
+The CLI shows the normalized parameters, template and script hashes, project,
+design, output directory, session selector and policy digest. After reviewing
+those fields, type the displayed confirmation at the prompt. Retry the original
+MCP call. The worker claims the grant before executing any builder code. A
+failed attempt consumes its grant. Concurrent retries can execute the approved
+call once. A changed request needs its own review. Unknown parameters, changed
+builder code, malformed schemas and output paths outside the approved roots
+require a corrected request or a reviewed policy change
+(`approval_mode="review_policy_or_request"`).
+
+Keep the configured allowlist, reviewed code and the sibling
+`<allowlist-filename>.approvals` directory under operator-controlled OS
+permissions. The broker needs read access to that directory. Keep the guard
+state directory and its `builder_approval_receipts.sqlite` durable across
+restarts. Restoring or removing the receipts while retaining old grants can
+make them reusable. Only the operator CLI writes grants. It exposes no MCP
+approval endpoint. When a coding agent has unrestricted shell access under the
+same OS account as the operator, use a separate operator account or an
+operator-controlled approval host to enforce separation.
 
 ## Windows GUI (recommended)
 

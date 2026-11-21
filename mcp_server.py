@@ -184,6 +184,11 @@ def _reject_guard_state_path(path: str | None, label: str) -> None:
         resolved = Path(path).expanduser().resolve()
     except OSError:
         return
+    from aedt_guard.builders import allowlist_path, approval_directory
+
+    protected = (allowlist_path().resolve(), approval_directory().resolve())
+    if any(resolved == target or target in resolved.parents for target in protected):
+        raise ValueError(f"{label} overlaps the operator builder policy or approval directory")
     state = managed_sessions.state_dir().resolve()
     if resolved == state or state in resolved.parents:
         raise ValueError(
@@ -228,8 +233,10 @@ async def _worker_call(
                            detail=(detail + " | " if detail else "")
                            + "%s: %s" % (type(exc).__name__, exc))
         raise
+    refused = isinstance(result, dict) and result.get("refused") is True
     _audit_worker_call(command, pid=pid, port=port, arguments=arguments,
-                       outcome="allowed", detail=detail)
+                       outcome="refused" if refused else "allowed",
+                       detail=result.get("reason", detail) if refused else detail)
     if not isinstance(result, dict):
         raise TypeError(f"AEDT worker command {command} returned a non-object result")
     return result
@@ -551,31 +558,32 @@ async def run_approved_builder(
     import uuid
 
     from aedt_guard.builders import (
-        BuilderError,
-        get_builder,
-        load_allowlist,
-        validate_output_dir,
-        validate_params,
-        validate_project,
+        BuilderError, approval_required, approved_once, prepare_request, request_id,
     )
 
     started = time.time()
     audit_args = {"builder_id": builder_id, "params": params or {}, "outdir": outdir}
+    if pid is None and port is None:
+        session = {"kind": "managed_launch"}
+    else:
+        target = AedtTarget.from_values(pid=pid, port=port)
+        session = {"kind": target.kind, "value": target.value}
     try:
-        allowlist = load_allowlist()
-        entry = get_builder(allowlist, builder_id)
-        cleaned = validate_params(entry, params)
-        final_outdir = validate_output_dir(entry, outdir)
-        final_project = validate_project(project_path)
+        entry, request, deviations = prepare_request(builder_id, project_path, outdir, params, session)
+        final_outdir, final_project = request["outdir"], request["project_path"]
+        cleaned = request["params"]
         for candidate, label in ((final_project, "project_path"), (final_outdir, "outdir")):
             _reject_guard_state_path(candidate, label)
+        refusal = (approval_required(builder_id, "; ".join(deviations), request)
+                   if deviations and not approved_once(request) else None)
     except (BuilderError, ValueError, OSError) as exc:
+        refusal = approval_required(builder_id, str(exc))
+    if refusal is not None:
         _audit_worker_call(
-            "run_approved_builder", pid=pid, port=port,
-            arguments=audit_args, outcome="refused",
-            detail=("allowlist/params/path refused: %s" % exc)[:500],
+            "run_approved_builder", pid=pid, port=port, arguments=audit_args,
+            outcome="refused", detail=("allowlist/params/path refused: %s" % refusal["reason"])[:500],
         )
-        return {"refused": True, "builder_id": builder_id, "reason": str(exc)}
+        return refusal
 
     work_root = Path(final_outdir) / "_work"
     work_dir = work_root / uuid.uuid4().hex
@@ -596,7 +604,8 @@ async def run_approved_builder(
             port = None
 
         detail = json.dumps(
-            {"builder_id": builder_id, "script_sha256": entry["sha256"],
+            {"builder_id": builder_id, "authorization": "one_time" if deviations else "allowlist",
+             "request_id": request_id(request), "script_sha256": entry["sha256"],
              "params": cleaned, "outdir": final_outdir},
             ensure_ascii=False, sort_keys=True,
         )[:500]
@@ -608,12 +617,18 @@ async def run_approved_builder(
                 "builder_id": builder_id,
                 "params": cleaned,
                 "project_path": str(working_project),
+                "source_project": final_project, "request_id": request_id(request),
+                "requested_session": session,
                 "outdir": final_outdir,
             },
             timeout=timeout if timeout is not None else 1800.0,
             detail=detail,
         )
+        if result.get("refused"):
+            return result
         result["builder"] = builder_id
+        result["authorization"] = "one_time" if deviations else "allowlist"
+        result["request_id"] = request_id(request)
         result["params"] = cleaned
         result["requested_project"] = final_project
         result["working_project"] = str(working_project)
@@ -1621,6 +1636,7 @@ def spec_create(
     metrics: list[dict[str, Any]],
     evaluation: dict[str, Any] | None = None,
     execution_policy: dict[str, Any] | None = None,
+    objectives: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Create the versioned design specification for one campaign (v1.6)."""
     spec = new_spec(
@@ -1630,6 +1646,7 @@ def spec_create(
         metrics,
         evaluation=evaluation,
         execution_policy=execution_policy,
+        objectives=objectives,
     )
     paths = _campaign_paths(campaign_dir)
     paths["root"].mkdir(parents=True, exist_ok=True)
@@ -1786,7 +1803,7 @@ def submit_guarded_run(
         project=project_name,
         design=design_name,
         setup=setup_name,
-        spec_version=spec["version"],
+        spec=spec,
         params=params or {},
         cuts=cuts or ["theta_phi0", "phi_theta90"],
         frequency_ghz=frequency_ghz,
@@ -1805,6 +1822,9 @@ def submit_guarded_run(
             "spec_version": spec["version"],
             "metrics": {
                 name: row.get("value") for name, row in (cached.get("metrics") or {}).items()
+            },
+            "metric_checks": {
+                name: row.get("passed") for name, row in (cached.get("metrics") or {}).items()
             },
             "artifact_dir": cached.get("artifact_dir"),
             "note": "identical parameters and spec version already completed; no solve started",

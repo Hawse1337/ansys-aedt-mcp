@@ -82,6 +82,8 @@ class QuietProbeTests(unittest.TestCase):
             AedtTarget("port", 50051), "finalize_solve",
             {"project_name": "P", "design_name": "D", "setups": ["Setup1"]})
         self.assertIsNone(result["setup_solution_data"]["Setup1"])
+        self.assertFalse(result["solution_data_complete"])
+        self.assertEqual(result["unverified_setups"], ["Setup1"])
         self.assertEqual(app.post.solution_calls, [])
 
     def test_a_known_flag_is_still_reported(self):

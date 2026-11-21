@@ -124,6 +124,33 @@ class MultiFrequencyEvaluatorTests(unittest.TestCase):
         self.assertIn("gain_h", result["unmet"])
         self.assertFalse(result["feasible"])
 
+    def test_peak_constraint_checks_each_frequency(self):
+        self.spec["metrics"].append({"id": "peak", "kind": "peak_gain",
+                                     "operator": ">=", "target": 6.0})
+        result = evaluate(self._artifacts({24.0: 7.0, 30.0: 5.0}), self.spec)
+        self.assertIn("peak", result["unmet"])
+        self.assertFalse(result["feasible"])
+
+    def test_missing_ripple_at_one_frequency_is_unmet(self):
+        artifacts = self._artifacts({24.0: 7.0, 30.0: 7.0})
+        self.spec["metrics"][2]["hard"] = True
+        del artifacts["farfield"]["30"]["phi"]
+        result = evaluate(artifacts, self.spec)
+        self.assertIn("ripple", result["unmet"])
+        self.assertFalse(result["feasible"])
+
+    def test_whole_missing_frequency_is_invalid(self):
+        self.spec["evaluation"]["frequencies_ghz"] = [24, 27, 30]
+        result = evaluate(self._artifacts({24: 6.5, 30: 6.5}), self.spec)
+        self.assertIn("far-field frequencies", result["invalid"])
+        self.assertFalse(result["feasible"])
+
+    def test_run_frequency_override_precedes_spec_default(self):
+        self.spec["evaluation"]["frequencies_ghz"] = [24, 27, 30]
+        artifacts = self._artifacts({24: 6.5, 30: 6.5})
+        artifacts["requested_frequencies_ghz"] = [24, 30]
+        self.assertTrue(evaluate(artifacts, self.spec)["feasible"])
+
     def test_missing_frequency_artifact_is_invalid(self):
         artifacts = self._artifacts({24.0: 6.5})
         artifacts["farfield"]["30"] = {"theta": str(self.dir / "missing.csv")}

@@ -25,6 +25,9 @@ class _Adapter:
         self.calls.append("farfield")
         return {"cuts": {}}
 
+    def export_convergence(self, path):
+        return {"evidence": {"assessment": "converged"}}
+
     def export_touchstone(self, output_file):
         self.calls.append("touchstone")
         return {"path": str(output_file),

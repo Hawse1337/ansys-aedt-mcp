@@ -78,6 +78,9 @@ class ResumeAdapter:
         return {"saved": True, "solution_data_complete": self.complete,
                 "incomplete_setups": [] if self.complete else ["Setup1"]}
 
+    def export_convergence(self, path):
+        return {"evidence": {"assessment": "converged"}}
+
     def export_touchstone(self, path):
         self.calls.append("touchstone")
         _write_s1p(path)
@@ -129,6 +132,13 @@ class ResumeRunnerTests(unittest.TestCase):
         export_entry = next(e for e in log if e["stage"] == "EXPORTING")
         self.assertEqual(export_entry["resumed_from"], "SOLVED")
         store.close()
+
+    def test_prepared_run_cannot_resume_from_existing_solution(self):
+        adapter = ResumeAdapter()
+        store, runner = self._store_and_runner(adapter)
+        with store:
+            self.assertEqual(runner.resume("PREPARED"), "RECOVERY_REQUIRED")
+            self.assertEqual(adapter.calls, [])
 
     def test_resume_terminal_state_is_noop(self):
         adapter = ResumeAdapter()

@@ -183,6 +183,39 @@ class EvaluatorTests(unittest.TestCase):
         self.assertFalse(result["feasible"])
         self.assertIn("s11", result["unmet"])
 
+    def test_missing_ripple_gates_only_a_hard_constraint(self):
+        s1p = self.dir / "case.s1p"
+        _write_s1p(s1p, [24.0, 28.0, 30.0], [0.15] * 3)
+        theta = self.dir / "theta.csv"
+        _write_theta_cut(theta)
+        artifacts = {"s11": str(s1p), "theta_cuts": {"0": str(theta)}}
+        spec = new_spec("lens", "lens", [24.0, 30.0], _metrics())
+        result = evaluate(artifacts, spec)
+        self.assertFalse(result["feasible"])
+        self.assertIn("ripple", result["unmet"])
+        spec["metrics"][2]["hard"] = False
+        self.assertTrue(evaluate(artifacts, spec)["feasible"])
+
+    def test_touchstone_default_frequency_unit_and_nonfinite_data(self):
+        from aedt_guard.evaluator import read_touchstone
+        path = self.dir / "default.s1p"
+        path.write_text("# S DB R 50\n28 -10 0\n", encoding="utf-8")
+        f, s11 = read_touchstone(path)
+        self.assertEqual((list(f), list(s11)), ([28.0], [-10.0]))
+        path.write_text("# GHz S DB R 50\n28 nan 0\n", encoding="utf-8")
+        with self.assertRaises(ArtifactError):
+            read_touchstone(path)
+
+    def test_curve_reader_validates_angle_and_gain_together(self):
+        from aedt_guard.evaluator import read_curve_csv
+        path = self.dir / "curve.csv"
+        path.write_text('Theta [deg],dB(GainTotal) []\n0,bad\n90,7\n', encoding="utf-8")
+        x, y = read_curve_csv(path)
+        self.assertEqual((list(x), list(y)), ([90.0], [7.0]))
+        path.write_text('Theta [deg],dB(GainTotal) []\n0,inf\n', encoding="utf-8")
+        with self.assertRaises(ArtifactError):
+            read_curve_csv(path)
+
     def test_evaluate_missing_artifact_is_invalid(self):
         spec = new_spec("lens", "metal_lens", [24.0, 30.0], _metrics())
         result = evaluate({"s11": str(self.dir / "missing.s1p")}, spec)

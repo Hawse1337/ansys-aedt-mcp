@@ -256,7 +256,12 @@ for line in sys.stdin:
         self.assertLess(time.monotonic() - started, 5.0)
         broker = client._brokers['pid:7']
         self.assertIsNotNone(broker.pending_request)
-        time.sleep(0.5)
+        # Wait for the asynchronous reader to enqueue the late response.
+        # Process startup can take longer than the worker's own sleep on Windows.
+        deadline = time.monotonic() + 10
+        while broker.responses.empty() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(broker.responses.empty(), "late response never arrived")
         with self.assertRaises(WorkerRecoveredError):
             client.execute(AedtTarget('pid',7),'ping',{})
 

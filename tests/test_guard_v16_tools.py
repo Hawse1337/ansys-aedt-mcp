@@ -83,6 +83,9 @@ class FakeAdapter:
         return {"saved": self.saved, "solution_data_complete": self.complete,
                 "incomplete_setups": [] if self.complete else ["Setup1"]}
 
+    def export_convergence(self, path):
+        return {"evidence": {"assessment": "converged"}}
+
     def export_touchstone(self, path):
         self.calls.append("touchstone")
         if self.export_fails:
@@ -146,6 +149,41 @@ class GuardedRunnerTests(unittest.TestCase):
         self.assertNotIn("submit", adapter.calls)
         self.assertEqual(store.get_run("r1")["status"], FAILED)
         store.close()
+
+    def test_rejected_submission_never_reads_stale_results(self):
+        adapter = FakeAdapter()
+        adapter.submit = lambda: {"started": False}
+        store, runner = self._runner(adapter)
+        with store:
+            self.assertEqual(runner.run(), FAILED)
+            self.assertNotIn("wait", adapter.calls)
+            self.assertNotIn("finalize", adapter.calls)
+            self.assertEqual(store.get_run("r1")["metrics"], {})
+
+    def test_extra_setup_submission_must_also_be_accepted(self):
+        adapter = FakeAdapter()
+        adapter.extra_setups = ["FarField"]
+        adapter.analyze_setup = lambda name: {"started": False}
+        store, runner = self._runner(adapter)
+        with store:
+            self.assertEqual(runner.run(), FAILED)
+            self.assertNotIn("finalize", adapter.calls)
+
+    def test_unknown_solution_data_requires_recovery(self):
+        adapter = FakeAdapter()
+        adapter.finalize = lambda: {"saved": True, "solution_data_complete": False,
+                                    "unverified_setups": ["Setup1"]}
+        store, runner = self._runner(adapter)
+        with store:
+            self.assertEqual(runner.run(), RECOVERY_REQUIRED)
+            self.assertNotIn("farfield", adapter.calls)
+
+    def test_invalid_exports_are_not_completed_or_cached(self):
+        store, runner = self._runner(FakeAdapter())
+        with store:
+            runner.evaluator = lambda artifacts, spec: {"invalid": "empty curve"}
+            self.assertEqual(runner.run(), FAILED)
+            self.assertEqual(store.get_run("r1")["metrics"], {})
 
     def test_timeout_requires_recovery(self):
         adapter = FakeAdapter(timed_out=True)
@@ -278,8 +316,12 @@ class GuardedToolsTests(unittest.TestCase):
                 phi = out / "p.csv"
                 _write_theta(theta)
                 _write_phi(phi)
-                return {"cuts": {"theta_phi0": {"path": str(theta)},
-                                 "phi_theta90": {"path": str(phi)}}}
+                cuts = {}
+                for freq in arguments.get("frequencies_ghz") or [None]:
+                    suffix = "" if freq is None else f"@{freq:g}GHz"
+                    cuts["theta_phi0" + suffix] = {"path": str(theta)}
+                    cuts["phi_theta90" + suffix] = {"path": str(phi)}
+                return {"cuts": cuts}
             raise AssertionError(f"unexpected worker command: {command}")
 
         submitted = None

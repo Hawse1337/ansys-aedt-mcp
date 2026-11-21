@@ -217,8 +217,12 @@ class EnqueueTests(unittest.TestCase):
                               else '"Phi [deg]","Theta [deg]","dB(GainTotal) []"')
                     rows = [header] + [f'{i},"0.0",5.0' for i in range(0, 40, 2)]
                     target_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-                return {"cuts": {"theta_phi0": {"path": str(theta)},
-                                 "phi_theta90": {"path": str(phi)}}}
+                cuts = {}
+                for freq in arguments.get("frequencies_ghz") or [None]:
+                    suffix = "" if freq is None else f"@{freq:g}GHz"
+                    cuts["theta_phi0" + suffix] = {"path": str(theta)}
+                    cuts["phi_theta90" + suffix] = {"path": str(phi)}
+                return {"cuts": cuts}
             raise AssertionError(command)
 
         with mock.patch.object(mcp_server.worker_client, "execute", side_effect=fake_execute):

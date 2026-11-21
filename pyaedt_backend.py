@@ -985,7 +985,8 @@ class PyAedtBackend:
             "saved_at_utc": datetime.now(timezone.utc).isoformat(),
             "setup_solution_data": probe,
             "incomplete_setups": missing,
-            "solution_data_complete": not missing and all(v is not False for v in probe.values()),
+            "unverified_setups": [name for name, ok in probe.items() if ok is None],
+            "solution_data_complete": all(ok is True for ok in probe.values()),
             "note": "True = solution data present for that setup; None = could not determine. "
                     "Incomplete setups mean the run must not be reported as COMPLETED.",
         }

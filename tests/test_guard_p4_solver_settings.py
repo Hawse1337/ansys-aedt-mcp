@@ -140,8 +140,12 @@ class SolverSettingsWiringTests(unittest.TestCase):
             phi = out / "p.csv"
             _write_theta(theta)
             _write_phi(phi)
-            return {"cuts": {"theta_phi0": {"path": str(theta)},
-                             "phi_theta90": {"path": str(phi)}}}
+            cuts = {}
+            for freq in arguments.get("frequencies_ghz") or [None]:
+                suffix = "" if freq is None else f"@{freq:g}GHz"
+                cuts["theta_phi0" + suffix] = {"path": str(theta)}
+                cuts["phi_theta90" + suffix] = {"path": str(phi)}
+            return {"cuts": cuts}
         raise AssertionError(f"unexpected command: {command}")
 
     def _wait(self, run_id):
@@ -198,6 +202,22 @@ class SolverSettingsWiringTests(unittest.TestCase):
             )
         self.assertTrue(second.get("cached"))
         self.assertEqual(second["run_id"], first["run_id"])
+
+    def test_changed_spec_at_same_version_is_not_a_cache_hit(self):
+        from aedt_guard import load_spec, save_spec
+
+        with mock.patch.object(mcp_server.worker_client, "execute", side_effect=self._fake_execute):
+            first = mcp_server.submit_guarded_run(
+                self.campaign, "lens", "Lens", pid=1, poll_interval_s=0.01, timeout_s=5)
+            self.assertEqual(self._wait(first["run_id"])["status"], "COMPLETED")
+            path = Path(self.campaign) / "design_spec.json"
+            spec = load_spec(path)
+            spec["metrics"][0]["target"] -= 1.0
+            save_spec(spec, path)
+            second = mcp_server.submit_guarded_run(
+                self.campaign, "lens", "Lens", pid=1, poll_interval_s=0.01, timeout_s=5)
+            self.assertNotEqual(second["run_id"], first["run_id"])
+            self.assertEqual(self._wait(second["run_id"])["status"], "COMPLETED")
 
 
 if __name__ == "__main__":
