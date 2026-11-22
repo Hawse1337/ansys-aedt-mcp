@@ -181,3 +181,18 @@ The approver remembers the last candidate script and builder in
 `AEDT_APPROVER_UI_CONFIG`). On the next launch it pre-fills the candidate path and starts the
 file picker in the last folder, so repeated approvals for the same project do not require
 navigating back to `scripts\p0_model.py` every time. It only stores paths, never credentials.
+
+## GUI v8: desktop notification for pending approvals
+
+The GUI runs a small background watcher while it is open (it can be minimized). When the selected
+candidate script differs from the approved SHA-256, or when an approved script declares parameters/
+enums missing from the allowlist schema, it shows a **Windows toast**:
+
+- title: `AEDT Builder 待审批` / `AEDT Builder 参数表待更新`;
+- body includes builder id, candidate file, short SHA-256, and sidecar reason/source when available;
+- one notification per candidate hash/schema mismatch, so it does not spam;
+- the **桌面通知** checkbox enables/disables it; **测试通知** verifies toast delivery;
+- the setting and last paths live in `builder_approver_ui.json`; no credentials.
+
+`--test-notify` on the exe sends a test toast and exits with the helper status. The GUI must be
+running (minimized is fine) for notifications; it does not install a Windows service.

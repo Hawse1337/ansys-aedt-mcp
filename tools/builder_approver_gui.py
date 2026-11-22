@@ -25,7 +25,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+from approval_watch import ApprovalWatcher
 from builder_schema import detect_candidate_schema, detect_suggestions
+from notify import windows_toast
 from schema_editor import SchemaEditorDialog
 
 GUARD_DIR = Path(r"C:\ProgramData\ansys-aedt-mcp")
@@ -205,6 +207,9 @@ class ApproverApp:
         self.request_meta_stale = False
         self.ui_config_path = ui_config_path()
         self.ui_config = load_ui_config(self.ui_config_path)
+        self.notifications_var = tk.BooleanVar(value=bool(self.ui_config.get("notifications", True)))
+        self._watch_candidate = ""
+        self.watcher: ApprovalWatcher | None = None
 
         root.title("AEDT Builder Approver")
         root.geometry("1180x820")
@@ -285,7 +290,14 @@ class ApproverApp:
         ttk.Button(actions, text="批准并更新 allowlist", command=self.apply_approval, style="Accent.TButton").pack(side="left")
         ttk.Button(actions, text="编辑参数（表单）", command=self.edit_schema).pack(side="left", padx=6)
         ttk.Button(actions, text="打开 approved 目录", command=self.open_approved_dir).pack(side="left", padx=6)
-        ttk.Button(actions, text="退出", command=root.destroy).pack(side="right")
+        ttk.Checkbutton(
+            actions,
+            text="桌面通知",
+            variable=self.notifications_var,
+            command=self._save_ui_state,
+        ).pack(side="left", padx=(12, 2))
+        ttk.Button(actions, text="测试通知", command=self.test_notification).pack(side="left", padx=4)
+        ttk.Button(actions, text="退出", command=self._on_close).pack(side="right")
 
         logbox = ttk.LabelFrame(root, text="检查摘要 / 日志", padding=8)
         logbox.pack(fill="both", expand=True, padx=8, pady=6)
@@ -297,6 +309,16 @@ class ApproverApp:
         self.log.pack(fill="both", expand=True)
         self.refresh()
         self._restore_ui_state()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.watcher = ApprovalWatcher(
+            lambda: self.allowlist_path,
+            lambda: self.current_id,
+            lambda: self._watch_candidate,
+            lambda: bool(self.notifications_var.get()),
+            self._notify_from_watcher,
+            lambda text: self.root.after(0, lambda: self._log(text)),
+        )
+        self.watcher.start()
 
     # ---- helpers -----------------------------------------------------
     def _log(self, text: str) -> None:
@@ -340,9 +362,38 @@ class ApproverApp:
             data["last_candidate"] = str(candidate)
         if self.current_id:
             data["last_builder_id"] = self.current_id
+        data["notifications"] = bool(self.notifications_var.get())
         if data != self.ui_config:
             self.ui_config = data
             save_ui_config(self.ui_config_path, data)
+
+    # ---- notifications / lifecycle ----------------------------------
+    def test_notification(self) -> None:
+        ok = windows_toast(
+            "AEDT Builder Approver",
+            "通知已启用：候选脚本更新或参数表缺项时，会在这里提醒你。",
+        )
+        self._log("[notify] test notification sent" if ok else "[notify] toast helper unavailable")
+
+    def _notify_from_watcher(self, title: str, message: str) -> None:
+        ok = windows_toast(title, message)
+
+        def update_ui() -> None:
+            self._log("[notify] %s%s" % (title, "" if ok else "（toast 不可用，使用提示音）"))
+            try:
+                self.root.bell()
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            self.root.after(0, update_ui)
+        except Exception:  # noqa: BLE001 - window may already be closing
+            pass
+
+    def _on_close(self) -> None:
+        if self.watcher is not None:
+            self.watcher.stop()
+        self.root.destroy()
 
     # ---- chrome ------------------------------------------------------
     def _build_header(self, root: tk.Tk) -> None:
@@ -478,11 +529,13 @@ class ApproverApp:
             self.candidate_status_var.set("（未选择有效的候选文件）")
             self.request_info_var.set("请求来源：（未选择候选）")
             self.full_path_var.set("完整路径：")
+            self._watch_candidate = ""
             self.request_meta = None
             self.request_meta_path = None
             self.request_meta_stale = False
             return
         self.full_path_var.set("完整路径：%s" % candidate)
+        self._watch_candidate = str(candidate)
         try:
             current_hash = str(entry.get("sha256", "")).lower()
             candidate_hash = sha256(candidate)
@@ -769,7 +822,10 @@ def main() -> int:
     parser.add_argument("--approved-dir", default=str(DEFAULT_APPROVED_DIR))
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--report", default="")
+    parser.add_argument("--test-notify", action="store_true")
     args = parser.parse_args()
+    if args.test_notify:
+        return 0 if windows_toast("AEDT Builder Approver", "通知测试成功") else 1
     if args.self_test:
         code = self_test(Path(args.allowlist))
         if args.report:
