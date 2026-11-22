@@ -22,6 +22,7 @@ top of the official [PyAEDT-MCP](https://github.com/ansys/pyaedt-mcp):
 - unmanaged-session detection (`guard_status`);
 - arbitrary broker code off by default;
 - run-token-scoped solves and guarded-run audit;
+- operator-approved builders with guard-generated approval requests (`request_builder_approval`);
 - PyAEDT app identity checks and launch/release auditing;
 - fail-closed client configurations and a threat model.
 
@@ -55,6 +56,7 @@ Then connect an MCP client to `.\mcp_server.py` (stdio). See
 | unmanaged detection | `guard_status` lists every live `ansysedt.exe` as managed/unmanaged and reports `scan.enforcement` |
 | arbitrary code | `run_python_code` / `run_python_script` refused at MCP and worker layers unless a human operator enables them |
 | approved builders | `run_approved_builder` executes an operator-allowlisted builder (script hash + typed params + output roots) so agents can run repeated campaigns autonomously without per-run code opt-in |
+| approval requests | `request_builder_approval` lets an agent submit a candidate path + reason; the guard computes hashes, writes a pending request, and never edits the allowlist. The v9 GUI watches the request inbox and can approve/load the candidate |
 | tokens | `AEDT_GUARD_ENFORCE=1` binds run tokens to project/design/setup for the dedicated solve entries; operator-approved builders are vetted code and are not token-enforced |
 | audit | launch/release and guarded-run commands land in `guard_audit.jsonl` with enforcement-mode fields |
 | identity | PyAEDT app objects are checked against the verified desktop |
@@ -71,9 +73,30 @@ Fail-closed, ready-to-use configurations live in [`examples/clients/`](examples/
 Both clients stop when the guard tools are missing; they never fall back to direct PyAEDT or
 `ansysedt.exe`.
 
+## Pending approval requests
+
+When a builder's script hash or parameter schema is not approved, an agent does not need to know
+the request JSON format. It calls the non-executing tool:
+
+```python
+request_builder_approval(
+    builder_id="p0_model",
+    candidate_path=r"C:\...\scripts\candidates\p0_model_codex_20261122.py",
+    reason="fix half-model port integration line and boundaries",
+)
+```
+
+The guard computes the candidate SHA-256, reads the old approved hash, writes
+`approval_requests/pending/<request_id>.json`, writes the candidate sidecar, and returns the
+request id. `run_approved_builder` returns `approval_required` with `next_tool` and a minimal
+template when it detects a hash/schema mismatch. The approver GUI (v9) watches the pending inbox,
+raises a notification and can load/approve the candidate; approval still requires the operator.
+See [docs/AI_BUILDER_APPROVAL_REQUEST.md](docs/AI_BUILDER_APPROVAL_REQUEST.md) and
+[docs/BUILDERS.md](docs/BUILDERS.md).
+
 ## Verification
 
-- Offline suite: **491 passed, 1 skipped, 118 subtests**.
+- Offline suite: **494 passed, 118 subtests**.
 - Approved-builder workflow: [docs/BUILDERS.md](docs/BUILDERS.md).
 - Live on AEDT 2026 R1 / PyAEDT 1.10.0: unmanaged attach refused, guard-launched session
   `managed: true`, `run_python_code` refused.
@@ -166,10 +189,12 @@ Local extensions retained from this MCP:
 - `get_project_info` and `close_projects` provide structured project inspection and scoped cleanup.
 - `create_hfss_design`, `start_analysis`, and `get_analysis_status` preserve the original HFSS workflow.
 - `build_wr90_waveguide` builds, validates, solves, and exports the dedicated WR-90 TE10 case.
+- `request_builder_approval` creates an operator approval request for a changed builder candidate
+  without executing AEDT or editing the allowlist.
 
 ## Dedicated Maxwell tools
 
-The server adds 15 `maxwell_*` tools; the full surface is 64 tools. They cover coil terminals, windings and links, current excitations, rotational/translational motion bands, force/torque, eddy effects, setup creation, local mesh operations, design readback, activity, numerical results and field plots. Each requires explicit `project_name`, `design_name` and one `pid`/`port`.
+The server adds 15 `maxwell_*` tools; the full surface is 65 tools. They cover coil terminals, windings and links, current excitations, rotational/translational motion bands, force/torque, eddy effects, setup creation, local mesh operations, design readback, activity, numerical results and field plots. Each requires explicit `project_name`, `design_name` and one `pid`/`port`.
 
 See [Maxwell tools, parameters, examples and verification limits](MAXWELL_TOOLS.md) and the [offline/live verification record](MAXWELL_VALIDATION.md). Restart the MCP server and refresh the client's tool list after updating; the existing AEDT window can remain open. Motion tools assign an existing band and do not construct or validate enclosing geometry. Motor transient behavior, mesh/time-step convergence and engineering conclusions require separate validation.
 

@@ -6,7 +6,14 @@
   operator-allowlisted builder script (SHA-256 verified at MCP and worker layers, typed parameter
   validation, output roots, unique project copy, managed session, attach-only wrapper, artifact
   and audit detail). No per-run arbitrary-code opt-in is required. `docs/BUILDERS.md` documents
-  the allowlist, operator workflow and residual same-user risk. Tool surface 64, tests 491.
+  the allowlist, operator workflow and residual same-user risk.
+- **Guard-generated approval requests (2026-11-23).** New non-executing `request_builder_approval`
+  tool: an agent supplies a candidate path + reason; the guard computes the candidate SHA-256,
+  reads the old approved hash, writes a pending request/sidecar, deduplicates repeated calls and
+  audits the request. `run_approved_builder` returns `approval_required` with
+  `next_tool=request_builder_approval` and a minimal template on hash/schema mismatch. The v9
+  approver GUI adds a pending-request inbox, notification, candidate loading and request
+  archival; approval remains operator-only. Tool surface 65, tests 494.
 **Same-version release rebuild (2026-11-21).** The v0.3.2 wheel/sdist/source assets were rebuilt
 from this commit (still 0.3.2; no new tag) so installers contain the follow-up fixes: PID->port
 attach with version pinning, guarded HFSS app factory, realistic project APIs, truthful close
