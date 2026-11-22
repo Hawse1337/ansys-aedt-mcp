@@ -526,6 +526,93 @@ async def run_python_script(
 
 
 @mcp.tool()
+async def request_builder_approval(
+    builder_id: str,
+    candidate_path: str,
+    reason: str,
+    request_type: str = "builder_change",
+    change_summary: list[str] | None = None,
+    new_params: list[dict[str, Any]] | None = None,
+    new_enum_values: dict[str, list[Any]] | None = None,
+    tested: list[str] | None = None,
+    risk_notes: str = "",
+    platform: str = "",
+    session_id: str = "",
+    session_title: str = "",
+) -> dict[str, Any]:
+    r"""Create an operator approval request for a builder candidate.
+
+    Call this when ``run_approved_builder`` says the script hash or parameter
+    schema is not approved.  You do not need to write the request JSON yourself:
+    this tool computes the candidate SHA-256, reads the old approved hash from
+    the allowlist, writes the request for the approver GUI, and returns the
+    request id/path. It never approves anything and never edits the allowlist.
+
+    Minimal call::
+
+        request_builder_approval(
+            builder_id="p0_model",
+            candidate_path=r"C:\...\scripts\candidates\p0_model_codex_20261122.py",
+            reason="fix half-model port integration line and boundaries",
+        )
+    """
+    from aedt_guard.approval_contract import ApprovalRequestError, build_request
+
+    audit_args = {
+        "builder_id": builder_id,
+        "candidate_path": candidate_path,
+        "request_type": request_type,
+    }
+    try:
+        record, path = build_request(
+            builder_id,
+            candidate_path,
+            reason,
+            request_type=request_type,
+            change_summary=change_summary,
+            new_params=new_params,
+            new_enum_values=new_enum_values,
+            platform=platform,
+            session_id=session_id,
+            session_title=session_title,
+            tested=tested,
+            risk_notes=risk_notes,
+        )
+    except (ApprovalRequestError, ValueError, OSError) as exc:
+        _audit_worker_call(
+            "request_builder_approval",
+            pid=None,
+            port=None,
+            arguments=audit_args,
+            outcome="refused",
+            detail=str(exc)[:500],
+        )
+        return {"refused": True, "status": "invalid_request", "reason": str(exc)}
+    _audit_worker_call(
+        "request_builder_approval",
+        pid=None,
+        port=None,
+        arguments=audit_args,
+        outcome="allowed",
+        detail="request_id=%s" % record["request_id"],
+    )
+    return {
+        "refused": False,
+        "status": record["status"],
+        "request_id": record["request_id"],
+        "request_path": str(path),
+        "builder_id": record["builder_id"],
+        "request_type": record["request_type"],
+        "candidate": record["candidate"],
+        "candidate_sha256": record["candidate_sha256"],
+        "old_approved_sha256": record["old_approved_sha256"],
+        "next_step": "wait_for_operator_approval",
+        "operator_action": "open AEDT Builder Approver",
+        "request": record,
+    }
+
+
+@mcp.tool()
 async def run_approved_builder(
     builder_id: str,
     project_path: str,
@@ -570,12 +657,47 @@ async def run_approved_builder(
         for candidate, label in ((final_project, "project_path"), (final_outdir, "outdir")):
             _reject_guard_state_path(candidate, label)
     except (BuilderError, ValueError, OSError) as exc:
+        reason = str(exc)
         _audit_worker_call(
             "run_approved_builder", pid=pid, port=port,
             arguments=audit_args, outcome="refused",
             detail=("allowlist/params/path refused: %s" % exc)[:500],
         )
-        return {"refused": True, "builder_id": builder_id, "reason": str(exc)}
+        response: dict[str, Any] = {
+            "refused": True,
+            "builder_id": builder_id,
+            "reason": reason,
+        }
+        if "hash changed" in reason or "hash" in reason.lower() and "approved" in reason.lower():
+            response.update(
+                {
+                    "status": "approval_required",
+                    "approval_required": True,
+                    "reason_code": "BUILDER_HASH_MISMATCH",
+                    "next_tool": "request_builder_approval",
+                    "request_template": {
+                        "builder_id": builder_id,
+                        "candidate_path": "<absolute path of the modified candidate .py>",
+                        "reason": "<why the builder must change>",
+                    },
+                }
+            )
+        elif "not allowed" in reason or "missing required" in reason or "must be one of" in reason:
+            response.update(
+                {
+                    "status": "approval_required",
+                    "approval_required": True,
+                    "reason_code": "PARAM_SCHEMA_MISMATCH",
+                    "next_tool": "request_builder_approval",
+                    "request_template": {
+                        "builder_id": builder_id,
+                        "candidate_path": "<approved script path, or a modified candidate>",
+                        "request_type": "schema_only",
+                        "reason": "<which parameter/values the operator must allow>",
+                    },
+                }
+            )
+        return response
 
     work_root = Path(final_outdir) / "_work"
     work_dir = work_root / uuid.uuid4().hex

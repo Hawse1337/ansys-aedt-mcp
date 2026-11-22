@@ -138,6 +138,9 @@ def test_mcp_tool_refuses_when_hash_changed(tmp_path: Path, monkeypatch):
     )
     assert result["refused"] is True
     assert "hash changed" in result["reason"]
+    assert result["status"] == "approval_required"
+    assert result["next_tool"] == "request_builder_approval"
+    assert result["request_template"]["builder_id"] == "demo"
 
 def test_mcp_tool_success_path_uses_unique_copy_and_cleans_work(tmp_path: Path, monkeypatch):
     import asyncio

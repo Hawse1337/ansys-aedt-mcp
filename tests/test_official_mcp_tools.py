@@ -1,4 +1,4 @@
-﻿import os
+import os
 import unittest
 
 from mcp.types import ImageContent
@@ -86,6 +86,7 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
             "list_designs",
             "list_projects",
             "open_project",
+            "request_builder_approval",
             "run_approved_builder",
             "run_python_code",
             "run_python_script",
@@ -96,7 +97,7 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
         registered = {tool.name for tool in await mcp_server.mcp.list_tools()}
 
         self.assertTrue(expected.issubset(registered))
-        self.assertEqual(len(registered), 64)  # + v1.10: archive_query, + v0.3: guard_status
+        self.assertEqual(len(registered), 65)  # + request_builder_approval (v0.3.3 workflow)
 
     async def test_targeted_status_and_connect_use_explicit_target(self):
         status = await mcp_server.check_aedt_status(pid=101)

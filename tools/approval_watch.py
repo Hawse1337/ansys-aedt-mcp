@@ -35,7 +35,7 @@ def _request_metadata(candidate: Path) -> tuple[dict[str, Any] | None, Path | No
     if path is None:
         return None, None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return (data if isinstance(data, dict) else None), path
     except Exception:  # noqa: BLE001
         return None, path
@@ -53,6 +53,7 @@ class ApprovalWatcher:
         notify: Callable[[str, str], None],
         log: Callable[[str], None],
         *,
+        requests_getter: Callable[[], Path] | None = None,
         interval: float = 4.0,
     ) -> None:
         self._allowlist_getter = allowlist_getter
@@ -61,6 +62,7 @@ class ApprovalWatcher:
         self._enabled_getter = enabled_getter
         self._notify = notify
         self._log = log
+        self._requests_getter = requests_getter
         self._interval = max(2.0, float(interval))
         self._stop = threading.Event()
         self._seen: set[str] = set()
@@ -72,9 +74,56 @@ class ApprovalWatcher:
     def stop(self) -> None:
         self._stop.set()
 
+    def _request_rows(self) -> list[dict[str, Any]]:
+        if self._requests_getter is None:
+            return []
+        root = Path(self._requests_getter())
+        if not root.is_dir():
+            return []
+        rows: list[dict[str, Any]] = []
+        for path in root.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("status") == "pending":
+                data["request_path"] = str(path)
+                rows.append(data)
+        return rows
+
     def check_once(self) -> None:
         if not self._enabled_getter():
             return
+        pending = self._request_rows()
+        pending_candidates: set[str] = set()
+        for request in pending:
+            request_id = str(request.get("request_id") or "")
+            if not request_id:
+                continue
+            candidate_text = str(request.get("candidate") or "").strip()
+            if candidate_text:
+                try:
+                    pending_candidates.add(str(Path(candidate_text).expanduser().resolve()).lower())
+                except OSError:
+                    pass
+            key = "request:%s" % request_id
+            if key in self._seen:
+                continue
+            self._seen.add(key)
+            builder = str(request.get("builder_id") or "")
+            request_type = str(request.get("request_type") or "builder_change")
+            body = "%s 有一个待审批的 %s 请求。\n%s" % (
+                builder,
+                "参数表更新" if request_type == "schema_only" else "builder 新版本",
+                candidate_text or "(无候选文件)",
+            )
+            reason = str(request.get("reason") or "").strip()
+            if reason:
+                body += "\n原因：%s" % reason
+            body += "\nrequest_id：%s" % request_id[:12]
+            self._notify("AEDT Builder 审批请求", body)
+            self._log("[notify] approval request %s" % request_id[:12])
+
         builder_id = (self._builder_getter() or "").strip()
         raw = (self._candidate_getter() or "").strip()
         if not builder_id or not raw:
@@ -85,7 +134,7 @@ class ApprovalWatcher:
         try:
             digest = _sha256(candidate)
             allowlist_path = Path(self._allowlist_getter())
-            data = json.loads(allowlist_path.read_text(encoding="utf-8"))
+            data = json.loads(allowlist_path.read_text(encoding="utf-8-sig"))
             entry = data["builders"][builder_id]
             approved = str(entry.get("sha256", "")).lower()
             params = entry.get("params") or {}
@@ -93,6 +142,8 @@ class ApprovalWatcher:
             return
 
         if digest != approved:
+            if str(candidate.resolve()).lower() in pending_candidates:
+                return
             key = "hash:%s:%s" % (candidate.resolve(), digest)
             if key not in self._seen:
                 self._seen.add(key)

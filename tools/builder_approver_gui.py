@@ -25,6 +25,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+from approval_inbox import decide_request as decide_approval_request
+from approval_inbox import list_pending as list_pending_requests
+from approval_inbox import pending_dir as approval_pending_dir
 from approval_watch import ApprovalWatcher
 from builder_schema import detect_candidate_schema, detect_suggestions
 from notify import windows_toast
@@ -209,6 +212,8 @@ class ApproverApp:
         self.ui_config = load_ui_config(self.ui_config_path)
         self.notifications_var = tk.BooleanVar(value=bool(self.ui_config.get("notifications", True)))
         self._watch_candidate = ""
+        self.pending_requests: list[dict] = []
+        self._active_request: dict | None = None
         self.watcher: ApprovalWatcher | None = None
 
         root.title("AEDT Builder Approver")
@@ -288,6 +293,13 @@ class ApproverApp:
         actions = ttk.Frame(root, padding=(8, 0))
         actions.pack(fill="x")
         ttk.Button(actions, text="批准并更新 allowlist", command=self.apply_approval, style="Accent.TButton").pack(side="left")
+        self.pending_button = ttk.Button(
+            actions,
+            text="待审批请求 (0)",
+            command=self.show_pending_requests,
+            style="Secondary.TButton",
+        )
+        self.pending_button.pack(side="left", padx=6)
         ttk.Button(actions, text="编辑参数（表单）", command=self.edit_schema).pack(side="left", padx=6)
         ttk.Button(actions, text="打开 approved 目录", command=self.open_approved_dir).pack(side="left", padx=6)
         ttk.Checkbutton(
@@ -317,8 +329,10 @@ class ApproverApp:
             lambda: bool(self.notifications_var.get()),
             self._notify_from_watcher,
             lambda text: self.root.after(0, lambda: self._log(text)),
+            requests_getter=approval_pending_dir,
         )
         self.watcher.start()
+        self.root.after(1000, self._refresh_pending_requests)
 
     # ---- helpers -----------------------------------------------------
     def _log(self, text: str) -> None:
@@ -389,6 +403,138 @@ class ApproverApp:
             self.root.after(0, update_ui)
         except Exception:  # noqa: BLE001 - window may already be closing
             pass
+
+    # ---- approval request inbox --------------------------------------
+    def _refresh_pending_requests(self) -> None:
+        try:
+            self.pending_requests = list_pending_requests()
+        except Exception:  # noqa: BLE001
+            self.pending_requests = []
+        try:
+            self.pending_button.configure(text="待审批请求 (%d)" % len(self.pending_requests))
+            self.root.after(4000, self._refresh_pending_requests)
+        except tk.TclError:
+            pass
+
+    def _canonical_candidate(self) -> str:
+        candidate = self._candidate()
+        return str(candidate.resolve()) if candidate is not None else ""
+
+    def _complete_matching_request(self, *, new_hash: str = "", note: str = "") -> None:
+        """Mark the active/matching request approved after a successful save."""
+        request = self._active_request
+        if request is None:
+            canonical = self._canonical_candidate()
+            for row in list_pending_requests():
+                if row.get("builder_id") != self.current_id:
+                    continue
+                row_candidate = str(Path(str(row.get("candidate") or "")).expanduser().resolve())
+                if row_candidate == canonical and (
+                    not new_hash or str(row.get("candidate_sha256") or "").lower() == new_hash
+                ):
+                    request = row
+                    break
+        if request is None:
+            return
+        try:
+            decide_approval_request(
+                str(request["request_id"]),
+                "approved",
+                decided_by=getpass.getuser(),
+                note=note or "approved via GUI",
+            )
+            self._log("[request] approved %s" % request["request_id"][:12])
+        except Exception as exc:  # noqa: BLE001
+            self._log("[request] failed to update status: %r" % (exc,))
+        self._active_request = None
+        self._refresh_pending_requests()
+
+    def show_pending_requests(self) -> None:
+        self._refresh_pending_requests()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("待审批请求")
+        dialog.geometry("980x480")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text="这些请求由守卫的 request_builder_approval 工具生成；选择一项载入候选文件。",
+            style="Muted.TLabel",
+            padding=10,
+        ).pack(fill="x")
+
+        columns = ("time", "builder", "type", "candidate", "reason", "source")
+        tree = ttk.Treeview(dialog, columns=columns, show="headings", selectmode="browse")
+        for key, title, width in (
+            ("time", "请求时间", 150),
+            ("builder", "Builder", 100),
+            ("type", "类型", 100),
+            ("candidate", "候选文件", 280),
+            ("reason", "原因", 320),
+            ("source", "来源", 160),
+        ):
+            tree.heading(key, text=title)
+            tree.column(key, width=width, anchor="w", stretch=key in {"candidate", "reason"})
+        tree.pack(fill="both", expand=True, padx=10)
+
+        def refresh() -> None:
+            tree.delete(*tree.get_children())
+            self._refresh_pending_requests()
+            for row in self.pending_requests:
+                source = " / ".join(
+                    part for part in (
+                        str(row.get("platform") or ""),
+                        str(row.get("session_title") or ""),
+                    ) if part
+                )
+                tree.insert(
+                    "",
+                    "end",
+                    iid=str(row.get("request_id")),
+                    values=(
+                        str(row.get("requested_at") or ""),
+                        str(row.get("builder_id") or ""),
+                        str(row.get("request_type") or ""),
+                        str(row.get("candidate") or ""),
+                        str(row.get("reason") or ""),
+                        source,
+                    ),
+                )
+        refresh()
+
+        def load_selected() -> None:
+            selection = tree.selection()
+            if not selection:
+                messagebox.showinfo("先选择请求", "请先选择一个待审批请求。", parent=dialog)
+                return
+            request_id = selection[0]
+            request = next((r for r in self.pending_requests if str(r.get("request_id")) == request_id), None)
+            if request is None:
+                return
+            builder = str(request.get("builder_id") or "")
+            if builder in list(self.builder_combo["values"]):
+                self.builder_var.set(builder)
+                self.current_id = builder
+                self.check_current()
+            candidate = str(request.get("candidate") or "")
+            if candidate:
+                self.candidate_var.set(candidate)
+            self._active_request = request
+            self._log(
+                "[request] loaded %s (%s, %s)"
+                % (request_id[:12], builder, candidate)
+            )
+            dialog.destroy()
+            if str(request.get("request_type")) == "schema_only":
+                self.root.after(100, self.edit_schema)
+
+        buttons = ttk.Frame(dialog, padding=10)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="载入选中请求", command=load_selected, style="Accent.TButton").pack(side="left")
+        ttk.Button(buttons, text="刷新", command=refresh).pack(side="left", padx=6)
+        ttk.Button(buttons, text="关闭", command=dialog.destroy).pack(side="right")
+        tree.bind("<Double-1>", lambda _event: load_selected())
 
     def _on_close(self) -> None:
         if self.watcher is not None:
@@ -648,6 +794,8 @@ class ApproverApp:
         self.data["builders"][self.current_id] = entry
         save_allowlist(self.allowlist_path, self.data)
         self._log("[schema] %s params updated via form (%d params)" % (self.current_id, len(params)))
+        if self._active_request and str(self._active_request.get("request_type")) == "schema_only":
+            self._complete_matching_request(note="parameter schema updated via GUI")
         messagebox.showinfo("已保存", "参数表已更新并写入 allowlist。")
         self.refresh()
 
@@ -780,6 +928,7 @@ class ApproverApp:
                 "[apply] %s\n  请求来源: %s\n  请求时间: %s\n  approved: %s\n  sha256: %s"
                 % (self.current_id, source, requested_at, target.resolve(), digest)
             )
+            self._complete_matching_request(new_hash=digest)
             messagebox.showinfo(
                 "已批准",
                 "已更新 allowlist 和 approved 副本。\n\n请求来源: %s\n请求时间: %s\n批准时间: %s\nsha256: %s"

@@ -196,3 +196,25 @@ enums missing from the allowlist schema, it shows a **Windows toast**:
 
 `--test-notify` on the exe sends a test toast and exits with the helper status. The GUI must be
 running (minimized is fine) for notifications; it does not install a Windows service.
+
+## AI-originated approval requests
+
+Agents should not hand-write the approval sidecar. Use the non-executing MCP tool:
+
+```python
+request_builder_approval(
+    builder_id="p0_model",
+    candidate_path=r"C:\...\scripts\candidates\p0_model_codex_20261122.py",
+    reason="fix half-model port integration line and boundaries",
+)
+```
+
+The guard computes the candidate SHA-256, reads the old approved hash, writes a request under
+`%LOCALAPPDATA%\ansys-aedt-mcp\approval_requests\pending\`, and returns a request id/path. It never
+edits the allowlist or approves anything. `run_approved_builder` additionally returns
+`status="approval_required"`, `next_tool="request_builder_approval"` and a minimal template when it
+detects a script-hash or parameter-schema mismatch.
+
+GUI v9 adds a **待审批请求 (N)** button and watches that pending directory, so new requests trigger
+the same Windows notification. Loading a request fills the candidate path; a `schema_only` request
+opens the parameter form; approval/denial archives the request.

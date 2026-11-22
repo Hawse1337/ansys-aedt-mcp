@@ -3,6 +3,10 @@
 > 适用对象：接入本机 `ansys-aedt-mcp` 守卫的 AI（DeepSeek Harness、Codex 或其他 Agent）。  
 > 目的：任何需要修改 builder 代码的 AI，都按同一格式提交“候选文件 + 审批请求”，操作员用 `AEDT Builder Approver` 完成审批，不需要 AI 直接改 allowlist。
 
+> **2026-11-23 更新：优先使用守卫工具生成请求。**  
+> 不要手写下面的 sidecar；先调用 MCP 工具 `request_builder_approval(builder_id, candidate_path, reason)`，守卫会计算 hash、生成 request_id、写请求文件和 sidecar，并在返回值里给出 request 路径。  
+> 本文的 JSON 字段仍可作为阅读/排错参考，但 AI 的默认动作应是调用工具，而不是构造 JSON。
+
 ## 0. 一句话
 
 **AI 只负责产出候选 builder 文件和审批请求，不负责注册自己。操作员审批后，守卫才允许新代码执行。**
