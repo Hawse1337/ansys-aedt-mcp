@@ -25,6 +25,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+from builder_schema import detect_candidate_schema, detect_suggestions
+from schema_editor import SchemaEditorDialog
+
 GUARD_DIR = Path(r"C:\ProgramData\ansys-aedt-mcp")
 DEFAULT_ALLOWLIST = GUARD_DIR / "builders.local.json"
 DEFAULT_APPROVED_DIR = GUARD_DIR / "approved"
@@ -249,7 +252,7 @@ class ApproverApp:
         actions = ttk.Frame(root, padding=(8, 0))
         actions.pack(fill="x")
         ttk.Button(actions, text="批准并更新 allowlist", command=self.apply_approval, style="Accent.TButton").pack(side="left")
-        ttk.Button(actions, text="编辑参数 schema", command=self.edit_schema).pack(side="left", padx=6)
+        ttk.Button(actions, text="编辑参数（表单）", command=self.edit_schema).pack(side="left", padx=6)
         ttk.Button(actions, text="打开 approved 目录", command=self.open_approved_dir).pack(side="left", padx=6)
         ttk.Button(actions, text="退出", command=root.destroy).pack(side="right")
 
@@ -393,9 +396,11 @@ class ApproverApp:
                         approval.get("requested_source"),
                     )
                 )
+            params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+            design_state = "已允许" if isinstance(params.get("design"), dict) else "未允许"
             self._set_detail(
-                "script: %s\nallowlist sha256: %s\nactual   sha256: %s%s"
-                % (script, expected, actual, approval_line)
+                "script: %s\nallowlist sha256: %s\nactual   sha256: %s\n参数表: %d 项；design: %s%s"
+                % (script, expected, actual, len(params), design_state, approval_line)
             )
             self._log("[check] %s: %s" % (self.current_id, "OK" if ok else "MISMATCH"))
         except Exception as exc:  # noqa: BLE001
@@ -503,45 +508,31 @@ class ApproverApp:
         if not entry:
             messagebox.showwarning("未选择 builder", "请先选择一个 builder。")
             return
-        dialog = tk.Toplevel(self.root)
-        dialog.title("编辑参数 schema — %s" % self.current_id)
-        dialog.geometry("780x580")
-        dialog.transient(self.root)
-        ttk.Label(
-            dialog,
-            text='修改 params JSON（例如给 feed.values 增加 "gap"），保存后立即更新 allowlist。',
-            padding=8,
-        ).pack(fill="x")
-        editor = tk.Text(dialog, wrap="none")
-        editor.pack(fill="both", expand=True, padx=8)
-        editor.insert("1.0", json.dumps(entry.get("params", {}), ensure_ascii=False, indent=2))
+        SchemaEditorDialog(
+            self.root,
+            self.current_id or "",
+            entry.get("params") or {},
+            self._candidate(),
+            self._apply_schema,
+        )
 
-        def save() -> None:
-            try:
-                params = json.loads(editor.get("1.0", "end"))
-                if not isinstance(params, dict):
-                    raise ValueError("params 必须是 JSON 对象")
-                if self.allowlist_path.is_file():
-                    backup = self.allowlist_path.with_name(
-                        self.allowlist_path.name
-                        + ".bak-"
-                        + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                    )
-                    shutil.copy2(self.allowlist_path, backup)
-                entry["params"] = params
-                self.data["builders"][self.current_id] = entry
-                save_allowlist(self.allowlist_path, self.data)
-                self._log("[schema] %s params updated" % self.current_id)
-                messagebox.showinfo("已保存", "参数 schema 已更新。")
-                dialog.destroy()
-                self.refresh()
-            except Exception as exc:  # noqa: BLE001
-                messagebox.showerror("保存失败", str(exc))
-
-        buttons = ttk.Frame(dialog, padding=8)
-        buttons.pack(fill="x")
-        ttk.Button(buttons, text="保存", command=save).pack(side="left")
-        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="left", padx=6)
+    def _apply_schema(self, params: dict) -> None:
+        entry = self._entry()
+        if not entry:
+            raise ValueError("未选择 builder")
+        if self.allowlist_path.is_file():
+            backup = self.allowlist_path.with_name(
+                self.allowlist_path.name
+                + ".bak-"
+                + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            )
+            shutil.copy2(self.allowlist_path, backup)
+        entry["params"] = params
+        self.data["builders"][self.current_id] = entry
+        save_allowlist(self.allowlist_path, self.data)
+        self._log("[schema] %s params updated via form (%d params)" % (self.current_id, len(params)))
+        messagebox.showinfo("已保存", "参数表已更新并写入 allowlist。")
+        self.refresh()
 
     # ---- candidate check -------------------------------------------
     def check_candidate(self) -> None:
@@ -605,10 +596,35 @@ class ApproverApp:
         reason = str(self.request_meta.get("reason") or "") if self.request_meta else ""
         old_hash = str(entry.get("sha256", "")).lower()
         new_hash = sha256(candidate)
+        try:
+            detected = detect_candidate_schema(candidate, entry.get("params") or {})
+            suggestions = detect_suggestions(entry.get("params") or {}, detected)
+            missing = list((suggestions.get("new") or {}).keys())
+            missing += [
+                "%s 的新可选值" % name for name in (suggestions.get("enum_additions") or {})
+            ]
+            if missing:
+                if messagebox.askyesno(
+                    "参数表还没更新",
+                    "候选脚本里有参数表未声明的能力：\n\n  - %s\n\n是否先打开参数（表单）补充？"
+                    % "\n  - ".join(missing),
+                ):
+                    self.edit_schema()
+                    return
+        except Exception as exc:  # noqa: BLE001 - detection is advisory only
+            self._log("[schema-detect] skipped: %r" % (exc,))
         message = (
             "确认已完成人工 review，并批准新的 builder 版本？\n\n"
-            "Builder: %s\n请求来源: %s\n请求时间: %s\n请求说明: %s\n当前 hash: %s\n候选 hash: %s"
-            % (self.current_id, source, requested_at, reason or "(未填写)", old_hash, new_hash)
+            "Builder: %s\n请求来源: %s\n请求时间: %s\n请求说明: %s\n当前 hash: %s\n候选 hash: %s\n参数数量: %d"
+            % (
+                self.current_id,
+                source,
+                requested_at,
+                reason or "(未填写)",
+                old_hash,
+                new_hash,
+                len(entry.get("params") or {}),
+            )
         )
         if not messagebox.askyesno("确认批准", message):
             return
@@ -630,6 +646,8 @@ class ApproverApp:
             meta = dict(self.request_meta or {})
             meta.update(
                 {
+                    "candidate": str(candidate),
+                    "candidate_sha256": new_hash,
                     "requested_at": requested_at,
                     "requested_source": source,
                     "approved_at": approved_at,

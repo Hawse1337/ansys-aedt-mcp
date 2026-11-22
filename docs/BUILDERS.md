@@ -156,3 +156,20 @@ The approver ships with a custom shield/check logo (`tools/assets/aedt_builder_a
 a dark navy header, Segoe UI typography, teal primary actions, amber accent and a dark log panel.
 The window is resizable; the candidate path expands and wraps. Regenerate the icon with
 `python tools/make_approver_icon.py`.
+
+## GUI v6: form-based parameter schema
+
+The **“编辑参数（表单）”** dialog removes raw-JSON editing from the operator workflow:
+
+- parameters are rows: name, type (`number` / `enum` / `string`), required, range or values;
+- **添加参数 / 编辑 / 删除** generate valid JSON; there are no commas or braces to type;
+- **目标设计（design）** is a dedicated switch, not a normal geometry parameter;
+- **从候选脚本检测** parses the candidate's `run()` signature and obvious enum values
+  (`family` comparisons, argparse `choices`) and offers to add missing parameters/enums;
+- save validates every row and writes the allowlist atomically with a timestamped backup;
+- approval blocks with a prompt if the candidate declares parameters/enums that are not yet in
+  the schema, and fixes the approval metadata's `candidate_sha256` to the file actually approved.
+
+The guard schema format is unchanged; this is an operator UX layer over the same strict
+`params` object. Example: after approval, `design` must be supplied in the builder call
+(`{"design": "Trunc_10GHz", ...}`) because the builder's `run()` requires it.
