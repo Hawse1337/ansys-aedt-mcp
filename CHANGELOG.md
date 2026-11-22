@@ -13,7 +13,13 @@
   audits the request. `run_approved_builder` returns `approval_required` with
   `next_tool=request_builder_approval` and a minimal template on hash/schema mismatch. The v9
   approver GUI adds a pending-request inbox, notification, candidate loading and request
-  archival; approval remains operator-only. Tool surface 65, tests 494.
+  archival; approval remains operator-only.
+- **Registered Windows notifications (2026-11-23).** v10/v11 fix the toast helper and add
+  `tools/register_windows_notifications.py`: per-user AUMID `Hawse1337.AEDTBuilderApprover`,
+  Start-menu shortcut with `System.AppUserModel.ID`, toast/action-center enablement and a
+  best-effort notification-service refresh. Verified with the Windows notification platform
+  event log (`Toast ... delivered`); Focus Assist / Do Not Disturb can still suppress banners.
+  Tool surface 65, tests 494.
 **Same-version release rebuild (2026-11-21).** The v0.3.2 wheel/sdist/source assets were rebuilt
 from this commit (still 0.3.2; no new tag) so installers contain the follow-up fixes: PID->port
 attach with version pinning, guarded HFSS app factory, realistic project APIs, truthful close

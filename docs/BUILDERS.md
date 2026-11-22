@@ -218,3 +218,26 @@ detects a script-hash or parameter-schema mismatch.
 GUI v9 adds a **待审批请求 (N)** button and watches that pending directory, so new requests trigger
 the same Windows notification. Loading a request fills the candidate path; a `schema_only` request
 opens the parameter form; approval/denial archives the request.
+
+## GUI v11: registered Windows notifications
+
+The v8/v9 toast helper used an unregistered app id; Windows could accept the call and silently drop
+the toast (`PolicyReason=GlobalSettingDisabled` / missing AUMID). v11 registers a real per-user
+Windows app:
+
+```powershell
+python tools/register_windows_notifications.py --exe "C:\ProgramData\ansys-aedt-mcp\tools\AEDT Builder Approver.exe"
+```
+
+This writes only HKCU + the current user's Start-menu folder:
+
+- AUMID `Hawse1337.AEDTBuilderApprover`;
+- `Software\Classes\AppUserModelId\Hawse1337.AEDTBuilderApprover` display name/icon;
+- Start-menu shortcut carrying `System.AppUserModel.ID`;
+- `ToastEnabled=1` and per-app `Enabled` / `ShowInActionCenter`;
+- best-effort restart of the per-user notification service so the setting takes effect.
+
+`notify.py` now posts with that AUMID. `--test-notify` verifies the helper; check the Windows
+notification center. If Focus Assist / Do Not Disturb is on, Windows can still suppress banners.
+Pass `--no-enable-notifications` if you only want the shortcut/AUMID and prefer to control the
+global Windows notification setting yourself.

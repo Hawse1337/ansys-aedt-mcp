@@ -13,6 +13,9 @@ import sys
 from xml.sax.saxutils import escape
 
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+# Registered by tools/register_windows_notifications.py.  An unpackaged app
+# needs a Start-menu shortcut carrying this AUMID or Windows drops the toast.
+AUMID = "Hawse1337.AEDTBuilderApprover"
 
 
 def windows_toast(title: str, message: str, *, sound: bool = True) -> bool:
@@ -41,8 +44,8 @@ def windows_toast(title: str, message: str, *, sound: bool = True) -> bool:
         "$xml.LoadXml($xmlText);"
         "$toast=New-Object Windows.UI.Notifications.ToastNotification $xml;"
         "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
-        "'AEDT Builder Approver').Show($toast);"
-    ) % encoded_xml
+        "'%s').Show($toast);"
+    ) % (encoded_xml, AUMID)
     encoded_command = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     try:
         subprocess.Popen(

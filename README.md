@@ -94,6 +94,16 @@ raises a notification and can load/approve the candidate; approval still require
 See [docs/AI_BUILDER_APPROVAL_REQUEST.md](docs/AI_BUILDER_APPROVAL_REQUEST.md) and
 [docs/BUILDERS.md](docs/BUILDERS.md).
 
+For Windows notification-center delivery, register the approver once with pywin32 from the guard
+venv; this creates the per-user AUMID/Start-menu shortcut and enables toast delivery:
+
+```powershell
+python tools/register_windows_notifications.py --exe "C:\ProgramData\ansys-aedt-mcp\tools\AEDT Builder Approver.exe"
+```
+
+The registration writes only HKCU and the current user's Start-menu folder. `--test-notify` verifies
+the toast; Focus Assist / Do Not Disturb can still suppress banners.
+
 ## Verification
 
 - Offline suite: **494 passed, 118 subtests**.
