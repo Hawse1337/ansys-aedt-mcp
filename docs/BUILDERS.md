@@ -173,3 +173,11 @@ The **“编辑参数（表单）”** dialog removes raw-JSON editing from the 
 The guard schema format is unchanged; this is an operator UX layer over the same strict
 `params` object. Example: after approval, `design` must be supplied in the builder call
 (`{"design": "Trunc_10GHz", ...}`) because the builder's `run()` requires it.
+
+## GUI v7: remembers the last candidate
+
+The approver remembers the last candidate script and builder in
+`%LOCALAPPDATA%\ansys-aedt-mcp\builder_approver_ui.json` (override for testing with
+`AEDT_APPROVER_UI_CONFIG`). On the next launch it pre-fills the candidate path and starts the
+file picker in the last folder, so repeated approvals for the same project do not require
+navigating back to `scripts\p0_model.py` every time. It only stores paths, never credentials.

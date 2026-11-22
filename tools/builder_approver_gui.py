@@ -87,6 +87,34 @@ def apply_modern_style(root: tk.Tk) -> None:
 
 
 
+def ui_config_path() -> Path:
+    override = os.environ.get("AEDT_APPROVER_UI_CONFIG", "").strip()
+    if override:
+        return Path(override).expanduser()
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
+    return Path(base) / "ansys-aedt-mcp" / "builder_approver_ui.json"
+
+
+def load_ui_config(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - missing/corrupt UI state is harmless
+        return {}
+
+
+def save_ui_config(path: Path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+        fd, tmp = tempfile.mkstemp(prefix="approver-ui-", suffix=".json", dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - UI convenience must never block approval
+        pass
+
+
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -175,6 +203,8 @@ class ApproverApp:
         self.request_meta: dict | None = None
         self.request_meta_path: Path | None = None
         self.request_meta_stale = False
+        self.ui_config_path = ui_config_path()
+        self.ui_config = load_ui_config(self.ui_config_path)
 
         root.title("AEDT Builder Approver")
         root.geometry("1180x820")
@@ -221,6 +251,7 @@ class ApproverApp:
         self.candidate_var.trace_add("write", lambda *_: self._update_candidate_status())
         self.candidate_entry = ttk.Entry(path_row, textvariable=self.candidate_var)
         self.candidate_entry.pack(side="left", fill="x", expand=True, padx=6)
+        self.candidate_entry.bind("<FocusOut>", lambda _event: self._save_ui_state())
         ttk.Button(path_row, text="浏览...", command=self.browse_candidate).pack(side="left")
         ttk.Button(path_row, text="打开所在文件夹", command=self.open_candidate_dir).pack(side="left", padx=4)
         self.full_path_var = tk.StringVar(value="完整路径：")
@@ -265,6 +296,7 @@ class ApproverApp:
         )
         self.log.pack(fill="both", expand=True)
         self.refresh()
+        self._restore_ui_state()
 
     # ---- helpers -----------------------------------------------------
     def _log(self, text: str) -> None:
@@ -288,6 +320,29 @@ class ApproverApp:
     def _candidate(self) -> Path | None:
         text = self.candidate_var.get().strip()
         return Path(text).expanduser() if text else None
+
+    # ---- remembered UI state ----------------------------------------
+    def _restore_ui_state(self) -> None:
+        """Restore the last candidate and builder used in this project."""
+        last_builder = str(self.ui_config.get("last_builder_id") or "").strip()
+        values = list(self.builder_combo["values"])
+        if last_builder and last_builder in values:
+            self.builder_var.set(last_builder)
+            self.on_select()
+        last_candidate = str(self.ui_config.get("last_candidate") or "").strip()
+        if last_candidate and Path(last_candidate).is_file():
+            self.candidate_var.set(last_candidate)
+
+    def _save_ui_state(self) -> None:
+        candidate = self._candidate()
+        data = dict(self.ui_config)
+        if candidate is not None and candidate.is_file():
+            data["last_candidate"] = str(candidate)
+        if self.current_id:
+            data["last_builder_id"] = self.current_id
+        if data != self.ui_config:
+            self.ui_config = data
+            save_ui_config(self.ui_config_path, data)
 
     # ---- chrome ------------------------------------------------------
     def _build_header(self, root: tk.Tk) -> None:
@@ -335,9 +390,18 @@ class ApproverApp:
             self.refresh()
 
     def browse_candidate(self) -> None:
-        path = filedialog.askopenfilename(title="选择候选 builder 脚本", filetypes=[("Python", "*.py"), ("All", "*.*")])
+        last = str(self.ui_config.get("last_candidate") or "").strip()
+        initialdir = str(Path(last).parent) if last else None
+        initialfile = Path(last).name if last else None
+        path = filedialog.askopenfilename(
+            title="选择候选 builder 脚本",
+            filetypes=[("Python", "*.py"), ("All", "*.*")],
+            initialdir=initialdir,
+            initialfile=initialfile,
+        )
         if path:
             self.candidate_var.set(path)
+            self._save_ui_state()
 
     def open_candidate_dir(self) -> None:
         candidate = self._candidate()
