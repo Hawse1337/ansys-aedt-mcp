@@ -241,3 +241,28 @@ This writes only HKCU + the current user's Start-menu folder:
 notification center. If Focus Assist / Do Not Disturb is on, Windows can still suppress banners.
 Pass `--no-enable-notifications` if you only want the shortcut/AUMID and prefer to control the
 global Windows notification setting yourself.
+
+## GUI v12: optimisation provenance and completion gate
+
+`run_approved_builder` accepts optional provenance fields:
+`campaign_id`, `campaign_dir`, `candidate_id`, `purpose`, `source`, `optimizer`. They are
+recorded, never passed to the builder script. Defaults stay `source="manual"`, so existing
+callers are unchanged. The aster adapter sends `source="aster"` / `optimizer="aster"` and a
+campaign/candidate id.
+
+The guard appends each run to `%LOCALAPPDATA%\ansys-aedt-mcp\optimization_runs.jsonl`.
+GUI v12 adds:
+
+- a **优化运行 (N)** button listing recent runs with source (`aster` vs `manual`), campaign,
+  builder, candidate and status;
+- a main-window line: `最近 builder 运行：aster/优化系统 ...` or `manual/手工 ...`;
+- a **完成门槛** column read from `optimization_gate.json` / `optimization_manifest.json`
+  (`PASS` / `未完成` / `—`).
+
+The aster side provides `aster.approved_builder`:
+`ApprovedBuilderExecutor` evaluates a candidate through `run_approved_builder` and parses the
+returned `result.s1p` (and optional `farfield_metrics.json`) instead of using arbitrary code.
+`run_approved_campaign` writes `optimization_manifest.json` and `optimization_gate.json`.
+The gate requires an aster campaign, completed runs, a Pareto front and an acceptance result.
+These are **evidence and visibility** only; enforcement of "must use the optimiser" remains
+deferred until the task-mode rules are agreed.

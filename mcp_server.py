@@ -621,6 +621,13 @@ async def run_approved_builder(
     pid: int | None = None,
     port: int | None = None,
     timeout: float | None = None,
+    *,
+    campaign_id: str | None = None,
+    campaign_dir: str | None = None,
+    candidate_id: str | None = None,
+    purpose: str = "manual",
+    source: str = "manual",
+    optimizer: str = "",
 ) -> dict[str, Any]:
     """Run one operator-approved builder entrypoint with typed parameters.
 
@@ -648,6 +655,28 @@ async def run_approved_builder(
 
     started = time.time()
     audit_args = {"builder_id": builder_id, "params": params or {}, "outdir": outdir}
+    from aedt_guard.provenance import record_run
+
+    def _record_provenance(status: str, *, run_id: str = "", error: str = "",
+                           artifacts: list[str] | None = None, script_sha: str = "") -> dict[str, Any]:
+        return record_run(
+            builder_id=builder_id,
+            status=status,
+            project=project_path,
+            outdir=outdir,
+            script_sha256=script_sha,
+            campaign_id=campaign_id or "",
+            campaign_dir=campaign_dir or "",
+            candidate_id=candidate_id or "",
+            purpose=purpose or "manual",
+            source=source or "manual",
+            optimizer=optimizer or "",
+            run_id=run_id,
+            error=error,
+            artifacts=artifacts,
+            extra={"requested_project": project_path},
+        )
+
     try:
         allowlist = load_allowlist()
         entry = get_builder(allowlist, builder_id)
@@ -667,6 +696,7 @@ async def run_approved_builder(
             "refused": True,
             "builder_id": builder_id,
             "reason": reason,
+            "provenance": _record_provenance("refused", error=reason),
         }
         if "hash changed" in reason or "hash" in reason.lower() and "approved" in reason.lower():
             response.update(
@@ -765,9 +795,16 @@ async def run_approved_builder(
         result["artifacts"] = artifacts[:100]
         if not artifacts:
             result["artifact_warning"] = "no new artifact appeared under outdir during the run"
+        result["provenance"] = _record_provenance(
+            "completed",
+            run_id=str(result.get("run_id") or ""),
+            artifacts=result["artifacts"],
+            script_sha=str(entry.get("sha256") or ""),
+        )
         return result
     except asyncio.CancelledError:
         # The client/tool cancellation does not prove the worker stopped; keep the working copy.
+        _record_provenance("cancelled", error="client cancelled while worker was running")
         _audit_worker_call(
             "run_approved_builder", pid=pid, port=port,
             arguments=audit_args, outcome="refused",
@@ -777,6 +814,7 @@ async def run_approved_builder(
     except Exception as exc:  # noqa: BLE001 - report + cleanup
         if isinstance(exc, TimeoutError):
             retain_work = True
+        _record_provenance("failed", error="%s: %s" % (type(exc).__name__, exc))
         _audit_worker_call(
             "run_approved_builder", pid=pid, port=port,
             arguments=audit_args, outcome="refused",

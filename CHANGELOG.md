@@ -19,7 +19,12 @@
   Start-menu shortcut with `System.AppUserModel.ID`, toast/action-center enablement and a
   best-effort notification-service refresh. Verified with the Windows notification platform
   event log (`Toast ... delivered`); Focus Assist / Do Not Disturb can still suppress banners.
-  Tool surface 65, tests 494.
+- **Optimisation provenance and completion gate (2026-11-23).** `run_approved_builder` accepts
+  optional campaign/candidate/purpose/source/optimizer provenance and writes
+  `optimization_runs.jsonl`; the aster `approved_builder` adapter evaluates through the approved
+  builder (no arbitrary code), writes a campaign manifest and a completion gate. GUI v12 adds
+  **优化运行 (N)**, per-run source (`aster`/`manual`) and gate (`PASS`/未完成) display. This is
+  visibility/evidence, not yet task-mode enforcement. Tool surface 65, tests 496.
 **Same-version release rebuild (2026-11-21).** The v0.3.2 wheel/sdist/source assets were rebuilt
 from this commit (still 0.3.2; no new tag) so installers contain the follow-up fixes: PID->port
 attach with version pinning, guarded HFSS app factory, realistic project APIs, truthful close

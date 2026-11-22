@@ -31,6 +31,7 @@ from approval_inbox import pending_dir as approval_pending_dir
 from approval_watch import ApprovalWatcher
 from builder_schema import detect_candidate_schema, detect_suggestions
 from notify import windows_toast
+from optimization_view import gate_for_campaign, is_optimizer_run, read_recent
 from schema_editor import SchemaEditorDialog
 
 GUARD_DIR = Path(r"C:\ProgramData\ansys-aedt-mcp")
@@ -214,6 +215,7 @@ class ApproverApp:
         self._watch_candidate = ""
         self.pending_requests: list[dict] = []
         self._active_request: dict | None = None
+        self.optimization_rows: list[dict] = []
         self.watcher: ApprovalWatcher | None = None
 
         root.title("AEDT Builder Approver")
@@ -251,6 +253,10 @@ class ApproverApp:
             fg=TEXT, relief="flat", font=("Consolas", 9), padx=10, pady=8,
         )
         self.detail.pack(fill="x", pady=(6, 0))
+        self.optimization_var = tk.StringVar(value="最近 builder 运行：暂无")
+        ttk.Label(status, textvariable=self.optimization_var, style="Muted.TLabel").pack(
+            anchor="w", pady=(6, 0)
+        )
 
         candidate = ttk.LabelFrame(root, text="候选新版本（要审核批准的文件）", padding=8)
         candidate.pack(fill="x", padx=8, pady=6)
@@ -300,6 +306,13 @@ class ApproverApp:
             style="Secondary.TButton",
         )
         self.pending_button.pack(side="left", padx=6)
+        self.optimization_button = ttk.Button(
+            actions,
+            text="优化运行 (0)",
+            command=self.show_optimization_runs,
+            style="Secondary.TButton",
+        )
+        self.optimization_button.pack(side="left", padx=6)
         ttk.Button(actions, text="编辑参数（表单）", command=self.edit_schema).pack(side="left", padx=6)
         ttk.Button(actions, text="打开 approved 目录", command=self.open_approved_dir).pack(side="left", padx=6)
         ttk.Checkbutton(
@@ -333,6 +346,7 @@ class ApproverApp:
         )
         self.watcher.start()
         self.root.after(1000, self._refresh_pending_requests)
+        self.root.after(300, self._tick_optimization)
 
     # ---- helpers -----------------------------------------------------
     def _log(self, text: str) -> None:
@@ -535,6 +549,113 @@ class ApproverApp:
         ttk.Button(buttons, text="刷新", command=refresh).pack(side="left", padx=6)
         ttk.Button(buttons, text="关闭", command=dialog.destroy).pack(side="right")
         tree.bind("<Double-1>", lambda _event: load_selected())
+
+    # ---- optimisation provenance ------------------------------------
+    def _tick_optimization(self) -> None:
+        self._refresh_optimization_runs()
+        try:
+            self.root.after(5000, self._tick_optimization)
+        except tk.TclError:
+            pass
+
+    def _refresh_optimization_runs(self) -> None:
+        try:
+            self.optimization_rows = read_recent(100)
+        except Exception:  # noqa: BLE001
+            self.optimization_rows = []
+        aster = sum(1 for row in self.optimization_rows if is_optimizer_run(row))
+        manual = len(self.optimization_rows) - aster
+        try:
+            self.optimization_button.configure(text="优化运行 (%d)" % len(self.optimization_rows))
+            latest = self.optimization_rows[0] if self.optimization_rows else None
+            if latest is None:
+                self.optimization_var.set("最近 builder 运行：暂无")
+            else:
+                source = "aster/优化系统" if is_optimizer_run(latest) else "manual/手工"
+                campaign = str(latest.get("campaign_id") or "—")
+                status = str(latest.get("status") or "")
+                self.optimization_var.set(
+                    "最近 builder 运行：%s    来源计数：aster %d / manual %d    campaign：%s    %s"
+                    % (source, aster, manual, campaign, status)
+                )
+        except tk.TclError:
+            pass
+
+    def show_optimization_runs(self) -> None:
+        self._refresh_optimization_runs()
+        dialog = tk.Toplevel(self.root)
+        dialog.title("优化运行来源")
+        dialog.geometry("1120x560")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        ttk.Label(
+            dialog,
+            text=(
+                "这里显示 guard 记录的真实 builder 运行：aster/优化系统 会带 campaign 与完成门槛；"
+                "manual 表示手工/诊断运行，不计入优化完成度。"
+            ),
+            style="Muted.TLabel",
+            padding=10,
+        ).pack(fill="x")
+        columns = ("time", "source", "campaign", "builder", "candidate", "status", "gate")
+        tree = ttk.Treeview(dialog, columns=columns, show="headings", selectmode="browse")
+        for key, title, width in (
+            ("time", "时间", 155),
+            ("source", "来源", 110),
+            ("campaign", "Campaign", 220),
+            ("builder", "Builder", 100),
+            ("candidate", "候选/运行", 250),
+            ("status", "状态", 110),
+            ("gate", "完成门槛", 110),
+        ):
+            tree.heading(key, text=title)
+            tree.column(key, width=width, anchor="w", stretch=key in {"campaign", "candidate"})
+        tree.pack(fill="both", expand=True, padx=10)
+        row_by_iid: dict[str, dict] = {}
+
+        def refresh() -> None:
+            tree.delete(*tree.get_children())
+            self._refresh_optimization_runs()
+            for index, row in enumerate(self.optimization_rows):
+                iid = "%s:%d" % (row.get("at_utc", "run"), index)
+                row_by_iid[iid] = row
+                aster = is_optimizer_run(row)
+                source = "aster" if aster else "manual"
+                campaign_id = str(row.get("campaign_id") or "")
+                if aster and row.get("campaign_dir"):
+                    gate = gate_for_campaign(str(row["campaign_dir"]))
+                    gate_text = "PASS" if gate.get("passed") else "未完成"
+                else:
+                    gate_text = "—"
+                tree.insert("", "end", iid=iid, values=(
+                    str(row.get("at_utc") or ""),
+                    source,
+                    campaign_id or "—",
+                    str(row.get("builder_id") or ""),
+                    str(row.get("candidate_id") or row.get("run_id") or ""),
+                    str(row.get("status") or ""),
+                    gate_text,
+                ))
+            count = len(self.optimization_rows)
+            aster_count = sum(1 for row in self.optimization_rows if is_optimizer_run(row))
+            dialog.title("优化运行来源 — 共 %d 次，aster %d / manual %d" % (count, aster_count, count - aster_count))
+
+        def open_selected() -> None:
+            selection = tree.selection()
+            if not selection:
+                return
+            row = row_by_iid.get(selection[0], {})
+            target = row.get("campaign_dir") or row.get("outdir") or ""
+            if target and Path(target).is_dir():
+                os.startfile(target)  # noqa: S606
+
+        refresh()
+        buttons = ttk.Frame(dialog, padding=10)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="刷新", command=refresh).pack(side="left")
+        ttk.Button(buttons, text="打开选中 campaign/outdir", command=open_selected).pack(side="left", padx=6)
+        ttk.Button(buttons, text="关闭", command=dialog.destroy).pack(side="right")
+        tree.bind("<Double-1>", lambda _event: open_selected())
 
     def _on_close(self) -> None:
         if self.watcher is not None:
