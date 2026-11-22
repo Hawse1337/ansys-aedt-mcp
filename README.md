@@ -104,7 +104,7 @@ python tools/register_windows_notifications.py --exe "C:\ProgramData\ansys-aedt-
 The registration writes only HKCU and the current user's Start-menu folder. `--test-notify` verifies
 the toast; Focus Assist / Do Not Disturb can still suppress banners.
 
-GUI v12 also shows whether recent approved-builder runs came from the optimisation system:
+GUI v13 also shows whether recent approved-builder runs came from the optimisation system:
 `优化运行 (N)` lists source (`aster` vs `manual`), campaign, candidate, status and the campaign
 completion gate (`PASS` / `未完成`). The guard records optional campaign/candidate provenance
 passed by the aster adapter; it does not pass those fields to the builder script. See

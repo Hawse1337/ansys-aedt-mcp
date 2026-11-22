@@ -242,7 +242,7 @@ notification center. If Focus Assist / Do Not Disturb is on, Windows can still s
 Pass `--no-enable-notifications` if you only want the shortcut/AUMID and prefer to control the
 global Windows notification setting yourself.
 
-## GUI v12: optimisation provenance and completion gate
+## GUI v13: optimisation provenance and completion gate
 
 `run_approved_builder` accepts optional provenance fields:
 `campaign_id`, `campaign_dir`, `candidate_id`, `purpose`, `source`, `optimizer`. They are
@@ -250,8 +250,10 @@ recorded, never passed to the builder script. Defaults stay `source="manual"`, s
 callers are unchanged. The aster adapter sends `source="aster"` / `optimizer="aster"` and a
 campaign/candidate id.
 
-The guard appends each run to `%LOCALAPPDATA%\ansys-aedt-mcp\optimization_runs.jsonl`.
-GUI v12 adds:
+The guard appends each approved-builder run to `%LOCALAPPDATA%\ansys-aedt-mcp\optimization_runs.jsonl`.
+`submit_guarded_run` submissions are recorded too (`builder_id="guarded_run"`, default `source=manual`),
+so a manual solve that bypasses the approved builder is still visible as a manual run.
+GUI v13 adds:
 
 - a **优化运行 (N)** button listing recent runs with source (`aster` vs `manual`), campaign,
   builder, candidate and status;

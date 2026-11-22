@@ -1931,14 +1931,40 @@ def submit_guarded_run(
     num_cores: int | None = None,
     num_tasks: int | None = None,
     num_gpus: int | None = None,
+    *,
+    campaign_id: str | None = None,
+    candidate_id: str | None = None,
+    purpose: str = "manual",
+    source: str = "manual",
+    optimizer: str = "",
 ) -> dict[str, Any]:
     """Submit one guarded run and return immediately with its run_id (v1.6).
 
     The background runner performs preflight, submission, polling, save +
     solution-data verification, artifact export and evaluation, and only then
     marks the run COMPLETED. Query progress with ``get_run_status``.
+
+    Optional campaign/candidate/purpose/source/optimizer provenance is recorded for the
+    approver GUI (defaults to manual). It is not used by the solver.
     """
     spec, paths = _load_campaign(campaign_dir)
+    from aedt_guard.provenance import record_run
+
+    def _record_provenance(status: str, *, run_id: str = "", artifact_dir: str = "") -> dict[str, Any]:
+        return record_run(
+            builder_id="guarded_run",
+            status=status,
+            project=project_name,
+            outdir=str(artifact_dir or campaign_dir),
+            campaign_id=campaign_id or "",
+            campaign_dir=campaign_dir,
+            candidate_id=candidate_id or "",
+            purpose=purpose or "manual",
+            source=source or "manual",
+            optimizer=optimizer or "",
+            run_id=run_id,
+        )
+
     resolved_frequencies = resolve_frequencies(spec, frequencies_ghz)
     solver = resolve_solver_settings(
         spec,
@@ -1963,6 +1989,11 @@ def submit_guarded_run(
     with Store(paths["db"]) as store:
         cached = store.find_completed_by_cache_key(spec["project"], cache_key)
     if cached is not None:
+        _record_provenance(
+            "completed",
+            run_id=str(cached["run_id"]),
+            artifact_dir=str(cached.get("artifact_dir") or ""),
+        )
         return {
             "run_id": cached["run_id"],
             "status": "COMPLETED",
@@ -2071,6 +2102,7 @@ def submit_guarded_run(
     except Exception:  # noqa: BLE001 - fall back to the in-process runner
         daemon_ready = False
     if daemon_ready:
+        _record_provenance("queued", run_id=run_id, artifact_dir=str(artifact_dir))
         return {
             "run_id": run_id,
             "status": "QUEUED",
@@ -2128,6 +2160,7 @@ def submit_guarded_run(
 
     thread = threading.Thread(target=_run_in_background, name=f"guarded-{run_id}", daemon=True)
     thread.start()
+    _record_provenance("running", run_id=run_id, artifact_dir=str(artifact_dir))
     return {
         "run_id": run_id,
         "status": "RUNNING",

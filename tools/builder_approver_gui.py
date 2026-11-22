@@ -253,7 +253,7 @@ class ApproverApp:
             fg=TEXT, relief="flat", font=("Consolas", 9), padx=10, pady=8,
         )
         self.detail.pack(fill="x", pady=(6, 0))
-        self.optimization_var = tk.StringVar(value="最近 builder 运行：暂无")
+        self.optimization_var = tk.StringVar(value="最近优化/建模运行：暂无")
         ttk.Label(status, textvariable=self.optimization_var, style="Muted.TLabel").pack(
             anchor="w", pady=(6, 0)
         )
@@ -569,13 +569,13 @@ class ApproverApp:
             self.optimization_button.configure(text="优化运行 (%d)" % len(self.optimization_rows))
             latest = self.optimization_rows[0] if self.optimization_rows else None
             if latest is None:
-                self.optimization_var.set("最近 builder 运行：暂无")
+                self.optimization_var.set("最近优化/建模运行：暂无")
             else:
                 source = "aster/优化系统" if is_optimizer_run(latest) else "manual/手工"
                 campaign = str(latest.get("campaign_id") or "—")
                 status = str(latest.get("status") or "")
                 self.optimization_var.set(
-                    "最近 builder 运行：%s    来源计数：aster %d / manual %d    campaign：%s    %s"
+                    "最近优化/建模运行：%s    来源计数：aster %d / manual %d    campaign：%s    %s"
                     % (source, aster, manual, campaign, status)
                 )
         except tk.TclError:
