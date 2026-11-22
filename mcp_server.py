@@ -639,6 +639,11 @@ async def run_approved_builder(
     If no explicit PID/port is given the tool launches a managed AEDT session, which the caller can
     reuse for subsequent builder/solve calls. The source project is copied to a uniquely named
     working file under ``outdir/_work/<uuid>/`` so the original is never modified.
+
+    Optional provenance (``campaign_id``, ``campaign_dir``, ``candidate_id``, ``purpose``,
+    ``source``, ``optimizer``) is recorded for the approver GUI and is never passed to the
+    builder. Defaults are ``purpose=manual`` / ``source=manual``; the aster adapter sets
+    ``source=aster`` and a campaign id. This is visibility, not a security boundary.
     """
     import shutil
     import time
