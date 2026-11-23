@@ -1239,6 +1239,44 @@ class PyAedtBackend:
         post = getattr(app, "post", None)
         if post is None:
             raise BackendCommandError("report-image export unavailable (no post processor)")
+        # Preferred path: export an already-saved native report, preserving the
+        # operator's 5-degree sampling, dual traces, legend and axes exactly.
+        report_name = _optional_text(arguments, "report_name")
+        if report_name:
+            if any(char in report_name for char in "\\/:*?\"<>|"):
+                raise BackendCommandError("report_name contains an invalid filename character")
+            target_path = out_dir / (report_name + ".jpg")
+            try:
+                exported = post.export_report_to_jpg(
+                    str(out_dir) + "\\", report_name,
+                    width=width, height=height, image_format="jpg",
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise BackendCommandError(
+                    "saved report %r could not be exported: %s: %s"
+                    % (report_name, type(exc).__name__, str(exc)[:500])
+                ) from exc
+            if not target_path.is_file():
+                raise BackendCommandError(
+                    "saved report %r export did not produce %s (returned %r)"
+                    % (report_name, target_path, exported)
+                )
+            return {
+                "target": _target_dict(target),
+                "project_name": getattr(app, "project_name", None),
+                "design_name": getattr(app, "design_name", None),
+                "report_name": report_name,
+                "files": {
+                    report_name: {
+                        "path": str(target_path),
+                        "exists": True,
+                        "export_returned": str(exported)[:300],
+                    }
+                },
+                "errors": [],
+                "read_only": True,
+                "preserved_saved_report": True,
+            }
         setup_sweep = "%s : LastAdaptive" % setup_name
         tag = frequency.removesuffix("GHz").removesuffix("ghz")
         files: dict[str, Any] = {}

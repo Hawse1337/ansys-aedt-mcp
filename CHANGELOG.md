@@ -31,7 +31,9 @@
   `export_report_image` MCP tool exports AEDT-native 3D Polar / E-plane / H-plane JPGs from
   solved data for any frequency, plot selection and image size. E uses the dB-radial
   `Radiation Pattern`; H uses a native rectangular Phi/dB plot (the H cut varies only ~0.5 dB,
-  so AEDT's automatic Radiation Pattern radius was linear and Phi wrapped past 360°). It never rebuilds, solves, saves
+  so AEDT's automatic Radiation Pattern radius was linear and Phi wrapped past 360°). Passing
+  `report_name` exports an already-saved operator report (e.g. the 5° dual-trace `Gain Plot1`)
+  exactly as configured. It never rebuilds, solves, saves
   or changes geometry, and it does **not** require a builder/allowlist approval. Tool surface 66,
   tests 505.
 - **Launcher orphan recovery (2026-11-23).** A timed-out AEDT launch used to discard the

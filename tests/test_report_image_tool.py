@@ -60,6 +60,26 @@ def test_export_report_image_creates_three_native_reports(tmp_path: Path):
     assert sorted(post.deleted) == ["P3D_12", "PE_12", "PH_12"]
 
 
+def test_export_saved_report_preserves_operator_report(tmp_path: Path):
+    post = _FakePost(tmp_path)
+    app = SimpleNamespace(post=post, project_name="p", design_name="d")
+    backend = object.__new__(PyAedtBackend)
+    result = backend._export_report_image(
+        app,
+        AedtTarget("port", 12345),
+        {
+            "output_dir": str(tmp_path),
+            "report_name": "Gain Plot1",
+            "width": 1600,
+            "height": 1200,
+        },
+    )
+    assert result["preserved_saved_report"] is True
+    assert result["files"]["Gain Plot1"]["exists"] is True
+    assert post.created == []
+    assert post.deleted == []
+
+
 def test_export_report_image_rejects_unknown_plot(tmp_path: Path):
     post = _FakePost(tmp_path)
     app = SimpleNamespace(post=post, project_name="p", design_name="d")

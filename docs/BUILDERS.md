@@ -326,7 +326,22 @@ export_report_image(
     height=1200,
     port=50175,
 )
+
+# Preferred when the project already contains an operator-configured report:
+export_report_image(
+    project_path=r"C:\...\P0_...\.aedt",
+    design_name="Trunc_10GHz",
+    output_dir=r"C:\...\final_figs\aedt_report",
+    report_name="Gain Plot1",  # preserves 5-degree sampling, dual traces, axes
+    width=1600,
+    height=1200,
+    port=50175,
+)
 ```
+
+Passing `report_name` exports the saved report exactly as configured, which is
+the right path for a dual-trace Radiation Pattern such as `Gain Plot1`. When
+`report_name` is set, `plots` is ignored.
 
 It opens the solved project, creates the requested native reports and removes
 them again before returning:
@@ -335,9 +350,13 @@ them again before returning:
 - E-plane: dB-radial `Radiation Pattern`;
 - H-plane: native `Rectangular Plot` (X = Phi 0..360, Y = dB(GainTotal)).
 
-The H-plane is deliberately rectangular: a nearly omnidirectional H cut only
-varies by ~0.5 dB, so AEDT's automatic Radiation Pattern radius can choose a
-linear dBi axis and wrap Phi past 360 degrees, producing a star-shaped artifact.
+The H-plane is deliberately rectangular as a **fallback** when the tool creates
+the report: a nearly omnidirectional H cut only varies by ~0.5 dB, so AEDT's
+automatic Radiation Pattern radius can choose a linear dBi axis and wrap Phi
+past 360 degrees, producing a star-shaped artifact. If the project already has
+an operator-configured report (for example a dual-trace `Gain Plot1`), pass
+`report_name` instead: that preserves the exact saved Radiation Pattern,
+sampling, traces and axes.
 `Polar Plot` for E/H is also avoided because its default linear-dBi radius makes
 a normal pattern look like a straight line. It never rebuilds, solves, saves, or changes geometry. Because it
 is a fixed tool rather than a builder parameter, changing frequency, image size,

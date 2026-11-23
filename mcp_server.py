@@ -1474,6 +1474,7 @@ async def export_report_image(
     setup_name: str = "Setup1",
     frequency: str = "10GHz",
     plots: list[str] | None = None,
+    report_name: str | None = None,
     width: int = 1600,
     height: int = 1200,
     pid: int | None = None,
@@ -1487,6 +1488,10 @@ async def export_report_image(
     and removes the reports again. It never rebuilds, solves, saves or changes
     geometry. ``frequency`` is a free string such as ``10GHz`` or ``12GHz``;
     no builder/allowlist approval is involved.
+
+    Pass ``report_name`` to export an already-saved report (for example the
+    operator's ``Gain Plot1`` with its 5-degree sampling, dual traces and axes)
+    exactly as saved. When ``report_name`` is set, ``plots`` is ignored.
     """
     _reject_guard_state_path(project_path, "project path")
     _reject_guard_state_path(output_dir, "report image output")
@@ -1512,6 +1517,7 @@ async def export_report_image(
             "output_dir": output_dir,
             "frequency": frequency,
             "plots": plots,
+            "report_name": report_name,
             "width": width,
             "height": height,
         },
