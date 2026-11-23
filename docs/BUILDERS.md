@@ -219,6 +219,46 @@ GUI v9 adds a **待审批请求 (N)** button and watches that pending directory,
 the same Windows notification. Loading a request fills the candidate path; a `schema_only` request
 opens the parameter form; approval/denial archives the request.
 
+### Request supersede and reconciliation (v1.4)
+
+Only one active request is kept per builder. Creating a replacement:
+- archives the older request with `status=superseded` and `superseded_by=<new id>`;
+- leaves a small superseded tombstone in `pending/` so a waiter polling the old id can see why;
+- returns `superseded_requests` from `request_builder_approval`.
+
+The request tool and the GUI also reconcile:
+- if the current allowlist hash already equals the candidate and no new schema was requested, the
+  request is archived as `approved/already_applied` instead of asking again;
+- a pending request older than a newer approved request for the same builder is retired as
+  superseded. This is what removes stale ids after a replacement is approved.
+
+### Atomic approval (v1.4)
+
+The GUI approval action now writes **one** allowlist update containing:
+- the new script path and SHA-256;
+- all newly detected / requested parameter schema entries (including enum value additions).
+
+If the merged schema is invalid, approval is refused. This removes the old
+"hash approved but the parameter table was not updated" failure mode. The same merge/apply code is
+used by automatic approval.
+
+### Low-risk automatic approval (v1.4)
+
+A checkbox in the GUI (`低风险自动批准`) is **off by default**. When enabled, the GUI scans pending
+requests every 5 seconds and auto-approves only when all checks pass:
+
+- candidate hash matches the request;
+- candidate compiles;
+- imports unchanged;
+- top-level function/class set unchanged;
+- no network / subprocess / eval/exec / destructive file calls;
+- small diff;
+- schema can be merged and validated.
+
+Everything else remains pending for manual review. Auto-approval is a same-user integrity control,
+not an OS sandbox; the operator opts in explicitly and can turn it off while sitting at the
+computer.
+
 ## GUI v11: registered Windows notifications
 
 The v8/v9 toast helper used an unregistered app id; Windows could accept the call and silently drop

@@ -22,7 +22,7 @@ from .managed import state_dir
 
 CONTRACT_VERSION = 2
 REQUEST_TYPES = {"builder_change", "schema_only"}
-STATUSES = {"pending", "approved", "denied", "expired", "cancelled"}
+STATUSES = {"pending", "approved", "denied", "expired", "cancelled", "superseded"}
 
 
 class ApprovalRequestError(ValueError):
@@ -90,6 +90,176 @@ def _validate_candidate(candidate_path: str) -> Path:
     return candidate
 
 
+def _sidecar_path(candidate: Path) -> Path:
+    return candidate.with_name(candidate.stem + ".approval-request.json")
+
+
+def _write_sidecar(candidate: str | Path, record: dict[str, Any]) -> None:
+    """Best-effort sidecar; stale sidecars are worse than a missing one."""
+    try:
+        if not candidate:
+            return
+        _atomic_json(_sidecar_path(Path(candidate)), record)
+    except (OSError, ValueError):
+        pass
+
+
+def _archive(data: dict[str, Any], status: str, **extra: Any) -> Path:
+    payload = dict(data)
+    payload.update({"status": status, "decided_at": _now()})
+    payload.update(extra)
+    path = archive_dir() / (str(payload["request_id"]) + ".json")
+    _atomic_json(path, payload)
+    return path
+
+
+def _supersede_pending(builder_id: str, new_request_id: str) -> list[str]:
+    """One active request per builder. Keep a tombstone the waiter can read."""
+    superseded: list[str] = []
+    for existing in list_requests("pending"):
+        if existing.get("builder_id") != builder_id:
+            continue
+        old_id = str(existing.get("request_id") or "")
+        if not old_id or old_id == new_request_id:
+            continue
+        tombstone = {
+            "schema_version": existing.get("schema_version", CONTRACT_VERSION),
+            "request_id": old_id,
+            "builder_id": builder_id,
+            "status": "superseded",
+            "superseded_by": new_request_id,
+            "superseded_at": _now(),
+            "candidate": existing.get("candidate"),
+            "candidate_sha256": existing.get("candidate_sha256"),
+            "reason": existing.get("reason", ""),
+            "note": "a newer request for this builder is now the active one",
+        }
+        _archive(existing, "superseded", superseded_by=new_request_id)
+        try:
+            _atomic_json(Path(str(existing["request_path"])), tombstone)
+        except OSError:
+            pass
+        _write_sidecar(str(existing.get("candidate") or ""), tombstone)
+        superseded.append(old_id)
+    return superseded
+
+
+def _already_applied_record(
+    builder_id: str,
+    candidate: Path,
+    candidate_sha: str,
+    entry: dict[str, Any],
+) -> tuple[dict[str, Any], Path]:
+    request_id = uuid.uuid4().hex
+    record: dict[str, Any] = {
+        "schema_version": CONTRACT_VERSION,
+        "request_id": request_id,
+        "status": "approved",
+        "already_approved": True,
+        "builder_id": builder_id,
+        "request_type": "builder_change",
+        "candidate": str(candidate),
+        "candidate_sha256": candidate_sha,
+        "old_approved_sha256": str(entry["sha256"]).lower(),
+        "approved_sha256": str(entry["sha256"]).lower(),
+        "reason": "allowlist already matches this candidate; no approval was needed",
+        "requested_at": _now(),
+        "decided_at": _now(),
+        "decided_by": "auto-reconcile",
+        "decision_note": "allowlist already matches candidate and no schema additions were requested",
+    }
+    path = archive_dir() / (request_id + ".json")
+    _atomic_json(path, record)
+    _write_sidecar(candidate, record)
+    return record, path
+
+
+def reconcile_requests() -> dict[str, list[str]]:
+    """Retire stale requests without changing any allowlist or candidate.
+
+    * A newer archived/approved request for the same builder supersedes an older
+      pending request (this is what happened when 949a was replaced by 23ac).
+    * A pending request whose candidate is already the approved hash and needs no
+      schema additions is archived as ``approved`` (already applied).
+    """
+    result = {"superseded": [], "already_applied": []}
+    try:
+        builders = load_allowlist().get("builders") or {}
+    except Exception:  # noqa: BLE001 - reconciliation must never block the GUI
+        builders = {}
+    for pending in list_requests("pending"):
+        builder_id = str(pending.get("builder_id") or "")
+        request_id = str(pending.get("request_id") or "")
+        entry = builders.get(builder_id) if isinstance(builders, dict) else None
+        if not request_id or not isinstance(entry, dict):
+            continue
+        pending_mtime = 0.0
+        try:
+            pending_mtime = Path(str(pending.get("request_path") or "")).stat().st_mtime
+        except OSError:
+            pass
+        # Newer approved request for the same builder -> old one is obsolete.
+        newer = [
+            row for row in list_requests("approved")
+            if row.get("builder_id") == builder_id
+            and str(row.get("decided_at") or row.get("requested_at") or "") > str(
+                pending.get("requested_at") or ""
+            )
+        ]
+        if not newer:
+            try:
+                if Path(str(pending.get("request_path") or "")).stat().st_mtime < max(
+                    (
+                        Path(str(row.get("request_path") or "")).stat().st_mtime
+                        for row in list_requests("approved")
+                        if row.get("builder_id") == builder_id
+                    ),
+                    default=0.0,
+                ):
+                    newer = [row for row in list_requests("approved") if row.get("builder_id") == builder_id]
+            except OSError:
+                pass
+        if newer:
+            tombstone = {
+                "schema_version": pending.get("schema_version", CONTRACT_VERSION),
+                "request_id": request_id,
+                "builder_id": builder_id,
+                "status": "superseded",
+                "superseded_by": newer[0].get("request_id"),
+                "superseded_at": _now(),
+                "candidate": pending.get("candidate"),
+                "candidate_sha256": pending.get("candidate_sha256"),
+                "reason": pending.get("reason", ""),
+                "note": "a newer approved request for this builder exists",
+            }
+            _archive(pending, "superseded", superseded_by=newer[0].get("request_id"))
+            try:
+                _atomic_json(Path(str(pending["request_path"])), tombstone)
+            except OSError:
+                pass
+            _write_sidecar(str(pending.get("candidate") or ""), tombstone)
+            result["superseded"].append(request_id)
+            continue
+        if (
+            str(entry.get("sha256") or "").lower() == str(pending.get("candidate_sha256") or "").lower()
+            and not (pending.get("new_params") or [])
+            and not (pending.get("new_enum_values") or {})
+        ):
+            _archive(pending, "approved", decided_by="auto-reconcile",
+                     decision_note="allowlist already matches candidate")
+            try:
+                Path(str(pending["request_path"])).unlink(missing_ok=True)
+            except OSError:
+                pass
+            _write_sidecar(str(pending.get("candidate") or ""), {
+                **pending, "status": "approved",
+                "decided_by": "auto-reconcile",
+                "decision_note": "allowlist already matches candidate",
+            })
+            result["already_applied"].append(request_id)
+    return result
+
+
 def build_request(
     builder_id: str,
     candidate_path: str,
@@ -112,6 +282,10 @@ def build_request(
     entry = _get_builder_entry(builder_id)
     candidate = _validate_candidate(candidate_path)
     candidate_sha = _sha256(candidate)
+    # Retire applied/superseded requests before deciding whether a new one is
+    # needed. This is what prevents an operator from having to approve a code
+    # change that is already active.
+    reconcile_requests()
     # Idempotency: repeated agent calls for the same pending candidate return
     # the existing request instead of flooding the operator inbox.
     for existing in list_requests():
@@ -126,7 +300,14 @@ def build_request(
             and same_candidate
         ):
             return existing, Path(str(existing["request_path"]))
+    if (
+        str(entry.get("sha256") or "").lower() == candidate_sha
+        and not (new_params or [])
+        and not (new_enum_values or {})
+    ):
+        return _already_applied_record(builder_id, candidate, candidate_sha, entry)
     request_id = uuid.uuid4().hex
+    superseded = _supersede_pending(builder_id, request_id)
     record: dict[str, Any] = {
         "schema_version": CONTRACT_VERSION,
         "request_id": request_id,
@@ -152,6 +333,7 @@ def build_request(
         "risk_notes": str(risk_notes or ""),
         "operator_action": "review_candidate_and_schema",
         "created_by": "aedt_guard",
+        "superseded_requests": superseded,
     }
     path = pending_dir() / (request_id + ".json")
     _atomic_json(path, record)
@@ -166,7 +348,7 @@ def build_request(
 
 
 def list_requests(status: str = "pending") -> list[dict[str, Any]]:
-    root = pending_dir() if status == "pending" else requests_root() / status
+    root = pending_dir() if status == "pending" else archive_dir()
     if not root.is_dir():
         return []
     result: list[dict[str, Any]] = []
@@ -184,14 +366,17 @@ def list_requests(status: str = "pending") -> list[dict[str, Any]]:
 def get_request(request_id: str) -> tuple[dict[str, Any], Path] | None:
     if not isinstance(request_id, str) or not request_id.strip():
         return None
-    path = pending_dir() / (request_id + ".json")
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return (data, path) if isinstance(data, dict) else None
+    for directory in (pending_dir(), archive_dir()):
+        path = directory / (request_id + ".json")
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            return data, path
+    return None
 
 
 def decide_request(
@@ -207,6 +392,10 @@ def decide_request(
     if found is None:
         raise ApprovalRequestError("request not found: %s" % request_id)
     data, path = found
+    if str(data.get("status") or "") != "pending":
+        raise ApprovalRequestError(
+            "request %s is already %s; it cannot be decided again" % (request_id, data.get("status"))
+        )
     data.update(
         {
             "status": status,

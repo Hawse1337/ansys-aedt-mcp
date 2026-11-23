@@ -26,7 +26,14 @@
   **优化运行 (N)**, per-run source (`aster`/`manual`) and gate (`PASS`/未完成) display.
   `submit_guarded_run` also records `builder_id="guarded_run"` provenance, so manual runs that
   bypass the approved builder remain visible. This is visibility/evidence, not yet task-mode
-  enforcement. Tool surface 65, tests 497.
+  enforcement.
+- **Approval flow v1.4 (2026-11-23).** One active request per builder: new requests supersede old
+  pending ones (tombstone + `superseded_by`), already-applied candidates are archived without
+  asking again, and the GUI reconciles stale ids. Approval now updates script hash **and** the
+  merged parameter schema atomically (manual and automatic paths share it). A GUI checkbox enables
+  **低风险自动批准** (default off): only compile-clean, unchanged-import, unchanged-top-level,
+  no-dangerous-call, small-diff candidates with valid schema are auto-applied; the rest stay
+  pending. Tool surface 65, tests 502.
 **Same-version release rebuild (2026-11-21).** The v0.3.2 wheel/sdist/source assets were rebuilt
 from this commit (still 0.3.2; no new tag) so installers contain the follow-up fixes: PID->port
 attach with version pinning, guarded HFSS app factory, realistic project APIs, truthful close

@@ -108,7 +108,11 @@ GUI v13 also shows whether recent approved-builder runs came from the optimisati
 `优化运行 (N)` lists source (`aster` vs `manual`), campaign, candidate, status and the campaign
 completion gate (`PASS` / `未完成`). The guard records optional campaign/candidate provenance
 passed by the aster adapter; it does not pass those fields to the builder script. See
-[docs/BUILDERS.md](docs/BUILDERS.md#gui-v12-optimisation-provenance-and-completion-gate).
+[docs/BUILDERS.md](docs/BUILDERS.md#gui-v13-optimisation-provenance-and-completion-gate).
+
+GUI v1.4 adds request supersede/reconciliation, atomic hash+schema approval and an operator toggle
+for **低风险自动批准** (off by default; strict static policy, audit-only, not an OS sandbox). See
+[docs/BUILDERS.md](docs/BUILDERS.md#request-supersede-and-reconciliation-v1.4).
 
 ## Verification
 

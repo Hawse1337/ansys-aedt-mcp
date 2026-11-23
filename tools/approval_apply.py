@@ -1,0 +1,222 @@
+# -*- coding: utf-8 -*-
+"""Atomic operator approval for builder candidates.
+
+One approval action updates the approved script hash **and** any missing
+parameter schema entries in the same allowlist write. This removes the old
+"approved the hash but forgot the params" failure mode.
+
+The module is intentionally GUI-side (no AEDT/guard imports) so the standalone
+approver exe can use it, and the automatic low-risk path uses exactly the same
+code as a manual click.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from approval_inbox import archive_dir, pending_dir
+from builder_schema import apply_suggestions, detect_candidate_schema, validate_schema
+
+
+class ApprovalApplyError(ValueError):
+    pass
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_allowlist(path: str | Path) -> dict[str, Any]:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ApprovalApplyError("cannot read allowlist: %s" % exc) from exc
+    if not isinstance(data, dict) or not isinstance(data.get("builders"), dict):
+        raise ApprovalApplyError("allowlist must contain a builders object")
+    return data
+
+
+def save_allowlist(path: str | Path, data: dict[str, Any]) -> None:
+    target = Path(path)
+    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    fd, tmp = tempfile.mkstemp(prefix="builders-", suffix=".json", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(tmp, target)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def merge_schema(
+    entry: dict[str, Any],
+    candidate: Path,
+    request: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Return (merged params, added/changed summary, errors).
+
+    Detection is deliberately additive: existing operator choices (type, range,
+    required flag) win, and enum values are only appended. A type conflict is an
+    error rather than a silent replacement.
+    """
+    current = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+    try:
+        detected = detect_candidate_schema(candidate, current)
+        merged = apply_suggestions(current, detected)
+    except Exception as exc:  # noqa: BLE001 - a malformed candidate is a hard error
+        return dict(current), [], ["schema detection failed: %s: %s" % (type(exc).__name__, exc)]
+    changes: list[str] = []
+    for name in detected:
+        if name not in current:
+            changes.append("+ %s" % name)
+    # A request may explicitly declare a parameter the heuristic did not detect.
+    for spec in (request or {}).get("new_params") or []:
+        if not isinstance(spec, dict):
+            continue
+        name = str(spec.get("name") or "").strip()
+        if not name:
+            continue
+        existing = merged.get(name)
+        if existing is None:
+            merged[name] = {key: value for key, value in spec.items() if key != "name"}
+            changes.append("+ %s (request)" % name)
+        elif existing.get("type") == "enum" and spec.get("type") == "enum":
+            values = list(existing.get("values") or [])
+            for value in spec.get("values") or []:
+                if value not in values:
+                    values.append(value)
+            existing["values"] = values
+    for name, values in ((request or {}).get("new_enum_values") or {}).items():
+        spec = merged.get(name)
+        if not isinstance(spec, dict) or spec.get("type") != "enum":
+            return merged, changes, ["enum addition for unknown/non-enum parameter %r" % name]
+        current_values = list(spec.get("values") or [])
+        for value in values or []:
+            if value not in current_values:
+                current_values.append(value)
+                changes.append("~ %s += %r" % (name, value))
+        spec["values"] = current_values
+    errors = validate_schema(merged)
+    return merged, changes, errors
+
+
+def apply_request(
+    request: dict[str, Any],
+    *,
+    allowlist_path: str | Path,
+    approved_dir: str | Path,
+    decided_by: str = "",
+    note: str = "",
+    auto_approved: bool = False,
+) -> dict[str, Any]:
+    """Approve one request atomically; never called by the guard itself."""
+    if str(request.get("status") or "") != "pending":
+        raise ApprovalApplyError("request is not pending")
+    request_id = str(request.get("request_id") or "")
+    builder_id = str(request.get("builder_id") or "")
+    candidate = Path(str(request.get("candidate") or "")).expanduser()
+    if not request_id or not builder_id or not candidate.is_file():
+        raise ApprovalApplyError("request has no valid candidate/builder")
+    expected_candidate = str(request.get("candidate_sha256") or "").lower()
+    actual_candidate = _sha256(candidate)
+    if expected_candidate and expected_candidate != actual_candidate:
+        raise ApprovalApplyError("candidate changed after the request was created")
+    data = load_allowlist(allowlist_path)
+    entry = data["builders"].get(builder_id)
+    if not isinstance(entry, dict):
+        raise ApprovalApplyError("unknown builder %r" % builder_id)
+    merged, changes, errors = merge_schema(entry, candidate, request)
+    if errors:
+        raise ApprovalApplyError("schema is not valid: %s" % "; ".join(errors))
+
+    target_dir = Path(approved_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / (builder_id + ".py")
+    if Path(allowlist_path).is_file():
+        backup = Path(allowlist_path).with_name(
+            Path(allowlist_path).name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+        )
+        try:
+            shutil.copy2(allowlist_path, backup)
+        except OSError:
+            pass
+    shutil.copy2(candidate, target)
+    digest = _sha256(target)
+    approved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    previous = str(entry.get("sha256") or "").lower()
+    entry["script"] = str(target.resolve())
+    entry["sha256"] = digest
+    entry["params"] = merged
+    meta = dict(request)
+    meta.update(
+        {
+            "candidate": str(candidate),
+            "candidate_sha256": expected_candidate or actual_candidate,
+            "approved_sha256": digest,
+            "previous_sha256": previous,
+            "approved_at": approved_at,
+            "approved_by": str(decided_by or ""),
+            "schema_added": changes,
+            "auto_approved": bool(auto_approved),
+        }
+    )
+    entry["approval"] = meta
+    data["builders"][builder_id] = entry
+    save_allowlist(allowlist_path, data)
+
+    archived = dict(request)
+    archived.update(
+        {
+            "status": "approved",
+            "decided_at": _now(),
+            "decided_by": str(decided_by or ""),
+            "decision_note": str(note or ("auto-approved low risk" if auto_approved else "approved via GUI")),
+            "approved_sha256": digest,
+            "schema_added": changes,
+            "auto_approved": bool(auto_approved),
+        }
+    )
+    _atomic_json(archive_dir() / (request_id + ".json"), archived)
+    try:
+        (pending_dir() / (request_id + ".json")).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return {
+        "approved": True,
+        "request_id": request_id,
+        "builder_id": builder_id,
+        "sha256": digest,
+        "schema_added": changes,
+        "approved_at": approved_at,
+        "auto_approved": bool(auto_approved),
+    }

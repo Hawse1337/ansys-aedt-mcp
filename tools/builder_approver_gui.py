@@ -28,7 +28,10 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from approval_inbox import decide_request as decide_approval_request
 from approval_inbox import list_pending as list_pending_requests
 from approval_inbox import pending_dir as approval_pending_dir
+from approval_inbox import reconcile_requests as reconcile_approval_requests
+from approval_apply import merge_schema
 from approval_watch import ApprovalWatcher
+from auto_approval import auto_approve_pending
 from builder_schema import detect_candidate_schema, detect_suggestions
 from notify import windows_toast
 from optimization_view import gate_for_campaign, is_optimizer_run, read_recent
@@ -212,6 +215,10 @@ class ApproverApp:
         self.ui_config_path = ui_config_path()
         self.ui_config = load_ui_config(self.ui_config_path)
         self.notifications_var = tk.BooleanVar(value=bool(self.ui_config.get("notifications", True)))
+        self.auto_approval_var = tk.BooleanVar(
+            value=bool(self.ui_config.get("auto_approve_low_risk", False))
+        )
+        self.auto_approval_status_var = tk.StringVar(value="")
         self._watch_candidate = ""
         self.pending_requests: list[dict] = []
         self._active_request: dict | None = None
@@ -324,6 +331,20 @@ class ApproverApp:
         ttk.Button(actions, text="测试通知", command=self.test_notification).pack(side="left", padx=4)
         ttk.Button(actions, text="退出", command=self._on_close).pack(side="right")
 
+        policy = ttk.Frame(root, padding=(8, 4))
+        policy.pack(fill="x")
+        ttk.Checkbutton(
+            policy,
+            text="低风险自动批准（离开电脑时；默认关闭）",
+            variable=self.auto_approval_var,
+            command=self._toggle_auto_approval,
+        ).pack(side="left")
+        ttk.Label(
+            policy,
+            textvariable=self.auto_approval_status_var,
+            style="Muted.TLabel",
+        ).pack(side="left", padx=10)
+
         logbox = ttk.LabelFrame(root, text="检查摘要 / 日志", padding=8)
         logbox.pack(fill="both", expand=True, padx=8, pady=6)
         self.log = scrolledtext.ScrolledText(
@@ -334,6 +355,7 @@ class ApproverApp:
         self.log.pack(fill="both", expand=True)
         self.refresh()
         self._restore_ui_state()
+        self._update_auto_approval_status()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.watcher = ApprovalWatcher(
             lambda: self.allowlist_path,
@@ -347,6 +369,7 @@ class ApproverApp:
         self.watcher.start()
         self.root.after(1000, self._refresh_pending_requests)
         self.root.after(300, self._tick_optimization)
+        self.root.after(1500, self._tick_auto_approval)
 
     # ---- helpers -----------------------------------------------------
     def _log(self, text: str) -> None:
@@ -391,9 +414,72 @@ class ApproverApp:
         if self.current_id:
             data["last_builder_id"] = self.current_id
         data["notifications"] = bool(self.notifications_var.get())
+        data["auto_approve_low_risk"] = bool(self.auto_approval_var.get())
         if data != self.ui_config:
             self.ui_config = data
             save_ui_config(self.ui_config_path, data)
+
+    # ---- low-risk auto approval --------------------------------------
+    def _update_auto_approval_status(self) -> None:
+        if self.auto_approval_var.get():
+            self.auto_approval_status_var.set("自动批准：开启（仅低风险候选，每 5 秒扫描）")
+        else:
+            self.auto_approval_status_var.set("自动批准：关闭（默认，人工审批）")
+
+    def _toggle_auto_approval(self) -> None:
+        if self.auto_approval_var.get():
+            ok = messagebox.askyesno(
+                "开启低风险自动批准？",
+                "开启后，GUI 会在后台每 5 秒检查待审批请求，并自动批准同时满足以下条件的候选：\n\n"
+                "  • 候选文件 hash 与请求一致；\n"
+                "  • 可编译；\n"
+                "  • 没有新增 import；\n"
+                "  • 顶层函数/类集合不变；\n"
+                "  • 没有网络、子进程、eval/exec、文件删除/写入等危险调用；\n"
+                "  • diff 较小；\n"
+                "  • 参数表可安全自动补全。\n\n"
+                "其余请求仍会保持 pending。\n\n"
+                "这是同用户完整性控制，不是 OS 沙箱；离开电脑时请确认接受该风险。",
+            )
+            if not ok:
+                self.auto_approval_var.set(False)
+        else:
+            self._log("[auto-approve] 已关闭低风险自动批准")
+        self._update_auto_approval_status()
+        self._save_ui_state()
+
+    def _tick_auto_approval(self) -> None:
+        if self.auto_approval_var.get():
+            try:
+                reconcile_approval_requests(self.allowlist_path)
+                report = auto_approve_pending(
+                    allowlist_path=self.allowlist_path,
+                    approved_dir=self.approved_dir,
+                    decided_by="auto-low-risk",
+                )
+                approved = report.get("approved") or []
+                for item in approved:
+                    self._log(
+                        "[auto-approve] %s %s schema: %s"
+                        % (
+                            item.get("builder_id"),
+                            item.get("request_id", "")[:12],
+                            ", ".join(item.get("schema_added") or []) or "无",
+                        )
+                    )
+                    self._notify_from_watcher(
+                        "低风险审批已自动批准",
+                        "%s：%s" % (item.get("builder_id"), item.get("request_id", "")[:12]),
+                    )
+                if approved:
+                    self._refresh_pending_requests()
+                    self.refresh()
+            except Exception as exc:  # noqa: BLE001 - auto approval must never kill the UI
+                self._log("[auto-approve] error: %r" % (exc,))
+        try:
+            self.root.after(5000, self._tick_auto_approval)
+        except tk.TclError:
+            pass
 
     # ---- notifications / lifecycle ----------------------------------
     def test_notification(self) -> None:
@@ -420,6 +506,10 @@ class ApproverApp:
 
     # ---- approval request inbox --------------------------------------
     def _refresh_pending_requests(self) -> None:
+        try:
+            reconcile_approval_requests(self.allowlist_path)
+        except Exception:  # noqa: BLE001 - stale cleanup must not break the UI
+            pass
         try:
             self.pending_requests = list_pending_requests()
         except Exception:  # noqa: BLE001
@@ -982,26 +1072,21 @@ class ApproverApp:
         reason = str(self.request_meta.get("reason") or "") if self.request_meta else ""
         old_hash = str(entry.get("sha256", "")).lower()
         new_hash = sha256(candidate)
+        merged_params = dict(entry.get("params") or {})
+        schema_changes: list[str] = []
         try:
-            detected = detect_candidate_schema(candidate, entry.get("params") or {})
-            suggestions = detect_suggestions(entry.get("params") or {}, detected)
-            missing = list((suggestions.get("new") or {}).keys())
-            missing += [
-                "%s 的新可选值" % name for name in (suggestions.get("enum_additions") or {})
-            ]
-            if missing:
-                if messagebox.askyesno(
-                    "参数表还没更新",
-                    "候选脚本里有参数表未声明的能力：\n\n  - %s\n\n是否先打开参数（表单）补充？"
-                    % "\n  - ".join(missing),
-                ):
-                    self.edit_schema()
-                    return
+            merged_params, schema_changes, schema_errors = merge_schema(
+                entry, candidate, self.request_meta or self._active_request
+            )
+            if schema_errors:
+                messagebox.showerror("参数表无法自动补全", "\n".join(schema_errors))
+                return
         except Exception as exc:  # noqa: BLE001 - detection is advisory only
             self._log("[schema-detect] skipped: %r" % (exc,))
         message = (
             "确认已完成人工 review，并批准新的 builder 版本？\n\n"
             "Builder: %s\n请求来源: %s\n请求时间: %s\n请求说明: %s\n当前 hash: %s\n候选 hash: %s\n参数数量: %d"
+            "\n参数表自动补全: %s"
             % (
                 self.current_id,
                 source,
@@ -1009,7 +1094,8 @@ class ApproverApp:
                 reason or "(未填写)",
                 old_hash,
                 new_hash,
-                len(entry.get("params") or {}),
+                len(merged_params),
+                ", ".join(schema_changes) if schema_changes else "无",
             )
         )
         if not messagebox.askyesno("确认批准", message):
@@ -1029,6 +1115,7 @@ class ApproverApp:
             approved_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             entry["script"] = str(target.resolve())
             entry["sha256"] = digest
+            entry["params"] = merged_params
             meta = dict(self.request_meta or {})
             meta.update(
                 {
@@ -1040,6 +1127,7 @@ class ApproverApp:
                     "approved_by": getpass.getuser(),
                     "previous_sha256": old_hash,
                     "approved_sha256": digest,
+                    "schema_added": schema_changes,
                 }
             )
             entry["approval"] = meta
