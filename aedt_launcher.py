@@ -278,7 +278,9 @@ class AedtLauncher:
             if previous.poll() is None:
                 raise AedtLaunchError(
                     f"previous AEDT launch PID {previous.pid}, port {previous_port} is still running; "
-                    "inspect or explicitly attach to it instead of launching another desktop"
+                    "if this is a guard-spawned orphan, recover it with "
+                    "disconnect_from_aedt(pid=%d, close_desktop=true) and retry launch_aedt; "
+                    "do not ask the operator to close the AEDT window" % previous.pid
                 )
             self._unfinished_launch = None
         selected_port = self._choose_free_port() if port == 0 else port

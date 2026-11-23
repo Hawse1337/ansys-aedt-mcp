@@ -308,3 +308,18 @@ returned `result.s1p` (and optional `farfield_metrics.json`) instead of using ar
 The gate requires an aster campaign, completed runs, a Pareto front and an acceptance result.
 These are **evidence and visibility** only; enforcement of "must use the optimiser" remains
 deferred until the task-mode rules are agreed.
+
+## AEDT launch orphan recovery
+
+If `launch_aedt` handshake times out, the AEDT process may still be alive. The wrong response is
+to ask the operator to close the window. Recovery order:
+
+1. try `connect_to_aedt(pid=...)` (a retained spawn record may allow this);
+2. if it is not attachable, use the guard's own force-close path:
+   `disconnect_from_aedt(pid=..., close_desktop=true)` (this is a management operation, not an
+   unmanaged attach);
+3. call `launch_aedt` again.
+
+The v1.4 launcher also retains the spawn record, tries adoption on retry, and auto-releases an
+orphan when adoption fails. The explicit `disconnect_from_aedt` step remains the deterministic
+fallback and must be used before asking a human to close anything.
