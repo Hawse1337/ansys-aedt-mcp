@@ -37,6 +37,7 @@ _HFSS_COMMANDS = {
     "preflight_design",
     "finalize_solve",
     "export_farfield_report",
+    "export_report_image",
 }
 _SOLUTION_TYPES = {
     "DrivenModal": "Modal",
@@ -836,6 +837,8 @@ class PyAedtBackend:
             return self._finalize_solve(app, target, arguments)
         if command == "export_farfield_report":
             return self._export_farfield_report(app, target, arguments)
+        if command == "export_report_image":
+            return self._export_report_image(app, target, arguments)
 
         running = bool(_read_value(app, "are_there_simulations_running"))
         setups = list(app.get_setups())
@@ -1199,6 +1202,114 @@ class PyAedtBackend:
             "project_name": project_name,
             "path": path or None,
             "saved": saved,
+        }
+
+    def _export_report_image(
+        self,
+        app: Any,
+        target: AedtTarget,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Export fixed AEDT-native report images (3D/E/H) from solved data.
+
+        This is a read-only post-processing capability with a fixed API: it does
+        not execute arbitrary user code, rebuild geometry, solve anything or save
+        the project. Reports that this tool creates are removed afterwards.
+        """
+        setup_name = _optional_text(arguments, "setup_name") or "Setup1"
+        out_dir = Path(_required_text(arguments, "output_dir")).expanduser()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        frequency = _optional_text(arguments, "frequency") or "10GHz"
+        if frequency and frequency[0].isdigit() and "ghz" not in frequency.lower():
+            frequency = frequency + "GHz"
+        raw_plots = arguments.get("plots") or ["3d", "e", "h"]
+        if isinstance(raw_plots, str):
+            raw_plots = [part.strip() for part in raw_plots.split(",") if part.strip()]
+        plots = {str(item).lower() for item in raw_plots}
+        unknown = plots - {"3d", "e", "h"}
+        if unknown:
+            raise BackendCommandError("unknown plots %s; choose from 3d/e/h" % sorted(unknown))
+        try:
+            width = int(arguments.get("width") or 1600)
+            height = int(arguments.get("height") or 1200)
+        except (TypeError, ValueError) as exc:
+            raise BackendCommandError("width/height must be integers") from exc
+        if not (100 <= width <= 8000 and 100 <= height <= 8000):
+            raise BackendCommandError("width/height must be between 100 and 8000")
+        post = getattr(app, "post", None)
+        if post is None:
+            raise BackendCommandError("report-image export unavailable (no post processor)")
+        setup_sweep = "%s : LastAdaptive" % setup_name
+        tag = frequency.removesuffix("GHz").removesuffix("ghz")
+        files: dict[str, Any] = {}
+        errors: list[str] = []
+
+        def _make(name: str, kind: str, variations: Mapping[str, Any],
+                  primary: str, secondary: str | None = None) -> None:
+            try:
+                kwargs: dict[str, Any] = {
+                    "expressions": "dB(GainTotal)",
+                    "setup_sweep_name": setup_sweep,
+                    "variations": dict(variations),
+                    "primary_sweep_variable": primary,
+                    "report_category": "Far Fields",
+                    "plot_type": kind,
+                    "context": "InfiniteSphere",
+                    "plot_name": name,
+                    "show": False,
+                }
+                if secondary:
+                    kwargs["secondary_sweep_variable"] = secondary
+                rep = post.create_report(**kwargs)
+                if not rep:
+                    raise RuntimeError("create_report returned False")
+                report_name = _resolve_report_name(rep)
+                target_path = out_dir / (name + ".jpg")
+                exported = post.export_report_to_jpg(
+                    str(out_dir) + "\\", report_name,
+                    width=width, height=height, image_format="jpg",
+                )
+                _drop_report(post, report_name)
+                files[name] = {
+                    "path": str(target_path),
+                    "exists": target_path.is_file(),
+                    "export_returned": str(exported)[:300],
+                }
+            except Exception as exc:  # noqa: BLE001 - report every plot independently
+                errors.append("%s: %s: %s" % (name, type(exc).__name__, str(exc)[:300]))
+
+        if "3d" in plots:
+            _make(
+                "P3D_%s" % tag, "3D Polar Plot",
+                {"Freq": [frequency], "Theta": ["All"], "Phi": ["All"]},
+                "Phi", "Theta",
+            )
+        if "e" in plots:
+            _make(
+                "PE_%s" % tag, "Polar Plot",
+                {"Freq": [frequency], "Phi": ["0deg"], "Theta": ["All"]},
+                "Theta",
+            )
+        if "h" in plots:
+            _make(
+                "PH_%s" % tag, "Polar Plot",
+                {"Freq": [frequency], "Theta": ["90deg"], "Phi": ["All"]},
+                "Phi",
+            )
+        if not files:
+            raise BackendCommandError(
+                "no report image was exported; errors: %s" % "; ".join(errors)[:1000]
+            )
+        return {
+            "target": _target_dict(target),
+            "project_name": getattr(app, "project_name", None),
+            "design_name": getattr(app, "design_name", None),
+            "setup_name": setup_name,
+            "frequency": frequency,
+            "plots": sorted(plots),
+            "files": files,
+            "errors": errors,
+            "read_only": True,
         }
 
     def _close_projects(

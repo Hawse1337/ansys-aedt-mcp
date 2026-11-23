@@ -114,6 +114,11 @@ GUI v1.4 adds request supersede/reconciliation, atomic hash+schema approval and 
 for **低风险自动批准** (off by default; strict static policy, audit-only, not an OS sandbox). See
 [docs/BUILDERS.md](docs/BUILDERS.md#request-supersede-and-reconciliation-v1.4).
 
+Basic native report images now have a fixed read-only tool, `export_report_image`
+(`3d` / `e` / `h`, arbitrary solved frequency and image size). It does not rebuild or solve and
+does not require a builder/allowlist approval; changing frequency is just an argument. See
+[docs/BUILDERS.md](docs/BUILDERS.md#native-report-image-export-no-allowlist-approval).
+
 ## Verification
 
 - Offline suite: **494 passed, 118 subtests**.

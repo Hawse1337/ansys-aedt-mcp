@@ -27,6 +27,11 @@
   `submit_guarded_run` also records `builder_id="guarded_run"` provenance, so manual runs that
   bypass the approved builder remain visible. This is visibility/evidence, not yet task-mode
   enforcement.
+- **Native report-image export (2026-11-23).** New fixed read-only
+  `export_report_image` MCP tool exports AEDT-native 3D Polar / E-plane / H-plane JPGs from
+  solved data for any frequency, plot selection and image size. It never rebuilds, solves, saves
+  or changes geometry, and it does **not** require a builder/allowlist approval. Tool surface 66,
+  tests 505.
 - **Launcher orphan recovery (2026-11-23).** A timed-out AEDT launch used to discard the
   guard-spawned managed record while keeping the live process tracked, so managed-only policy
   could neither attach nor relaunch; the operator had to close the window by hand. The launcher now

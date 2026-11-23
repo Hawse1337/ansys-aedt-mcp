@@ -78,6 +78,7 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
             "create_design",
             "disconnect_from_aedt",
             "export_config",
+            "export_report_image",
             "export_results",
             "get_guidelines_for",
             "get_model_info",
@@ -97,7 +98,7 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
         registered = {tool.name for tool in await mcp_server.mcp.list_tools()}
 
         self.assertTrue(expected.issubset(registered))
-        self.assertEqual(len(registered), 65)  # + request_builder_approval (v0.3.3 workflow)
+        self.assertEqual(len(registered), 66)  # + request_builder_approval, export_report_image
 
     async def test_targeted_status_and_connect_use_explicit_target(self):
         status = await mcp_server.check_aedt_status(pid=101)

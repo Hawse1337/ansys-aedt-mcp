@@ -309,6 +309,31 @@ The gate requires an aster campaign, completed runs, a Pareto front and an accep
 These are **evidence and visibility** only; enforcement of "must use the optimiser" remains
 deferred until the task-mode rules are agreed.
 
+## Native report-image export (no allowlist approval)
+
+`export_report_image` is a fixed, read-only guard tool for the common "copy the
+AEDT report image" request:
+
+```python
+export_report_image(
+    project_path=r"C:\...\P0_...\.aedt",
+    design_name="Trunc_10GHz",
+    output_dir=r"C:\...\final_figs\aedt_report",
+    setup_name="Setup1",
+    frequency="12GHz",          # any solved frequency, no schema approval
+    plots=["3d", "e", "h"],
+    width=1600,
+    height=1200,
+    port=50175,
+)
+```
+
+It opens the solved project, creates the requested native reports
+(3D Polar Plot / E-plane Polar / H-plane Polar), exports JPGs, and removes the
+reports again. It never rebuilds, solves, saves, or changes geometry. Because it
+is a fixed tool rather than a builder parameter, changing frequency, image size,
+or plot selection does **not** require a new allowlist approval.
+
 ## AEDT launch orphan recovery
 
 If `launch_aedt` handshake times out, the AEDT process may still be alive. The wrong response is

@@ -596,6 +596,7 @@ async def request_builder_approval(
         outcome="allowed",
         detail="request_id=%s" % record["request_id"],
     )
+    approved_already = record.get("status") == "approved"
     return {
         "refused": False,
         "status": record["status"],
@@ -606,8 +607,10 @@ async def request_builder_approval(
         "candidate": record["candidate"],
         "candidate_sha256": record["candidate_sha256"],
         "old_approved_sha256": record["old_approved_sha256"],
-        "next_step": "wait_for_operator_approval",
-        "operator_action": "open AEDT Builder Approver",
+        "already_approved": bool(record.get("already_approved")),
+        "superseded_requests": list(record.get("superseded_requests") or []),
+        "next_step": "retry_run_approved_builder" if approved_already else "wait_for_operator_approval",
+        "operator_action": "" if approved_already else "open AEDT Builder Approver",
         "request": record,
     }
 
@@ -1461,6 +1464,61 @@ async def export_farfield_report(
         },
         timeout=timeout if timeout is not None else 600.0,
     )
+
+
+@mcp.tool()
+async def export_report_image(
+    project_path: str,
+    design_name: str,
+    output_dir: str,
+    setup_name: str = "Setup1",
+    frequency: str = "10GHz",
+    plots: list[str] | None = None,
+    width: int = 1600,
+    height: int = 1200,
+    pid: int | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Export fixed AEDT-native report images (3D / E-plane / H-plane).
+
+    Read-only post-processing on an already-solved project: it opens the named
+    project/design, creates the requested native reports, exports JPG images
+    and removes the reports again. It never rebuilds, solves, saves or changes
+    geometry. ``frequency`` is a free string such as ``10GHz`` or ``12GHz``;
+    no builder/allowlist approval is involved.
+    """
+    _reject_guard_state_path(project_path, "project path")
+    _reject_guard_state_path(output_dir, "report image output")
+    if (pid is None) == (port is None):
+        raise ValueError("report image export needs exactly one explicit AEDT pid or grpc port")
+    opened = await _worker_call(
+        "open_project",
+        pid=pid,
+        port=port,
+        arguments={"project_path": project_path, "design_name": design_name},
+        timeout=timeout if timeout is not None else 600.0,
+    )
+    if not isinstance(opened, dict) or opened.get("opened") is False:
+        return {"exported": False, "open_result": opened}
+    result = await _worker_call(
+        "export_report_image",
+        pid=pid,
+        port=port,
+        arguments={
+            "project_name": project_path,
+            "design_name": design_name,
+            "setup_name": setup_name,
+            "output_dir": output_dir,
+            "frequency": frequency,
+            "plots": plots,
+            "width": width,
+            "height": height,
+        },
+        timeout=timeout if timeout is not None else 900.0,
+    )
+    result["exported"] = bool(result.get("files"))
+    return result
 
 
 @mcp.tool()
