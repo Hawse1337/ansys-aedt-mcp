@@ -1611,7 +1611,7 @@ async def export_report_image(
             "output_dir": output_dir,
             "frequency": frequency,
             "plots": plots,
-            "report_name": report_name,
+            "report_name": report_name or "",
             "width": width,
             "height": height,
         },

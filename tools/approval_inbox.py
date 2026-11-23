@@ -92,6 +92,15 @@ def reconcile_requests(allowlist_path: str | Path | None = None) -> dict[str, li
             archives.append(data)
     applied: list[str] = []
     superseded: list[str] = []
+    # Retire tombstones left by older versions in pending/.
+    if pending_dir().is_dir():
+        for path in pending_dir().glob("*.json"):
+            data = _read(path)
+            if data and data.get("status") == "superseded":
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
     for pending in list_pending():
         request_id = str(pending.get("request_id") or "")
         builder_id = str(pending.get("builder_id") or "")
@@ -115,7 +124,10 @@ def reconcile_requests(allowlist_path: str | Path | None = None) -> dict[str, li
                 "note": "a newer approved request for this builder exists",
             }
             _atomic_json(archive_dir() / (request_id + ".json"), {**pending, **tomb})
-            _atomic_json(Path(str(pending["request_path"])), tomb)
+            try:
+                Path(str(pending["request_path"])).unlink(missing_ok=True)
+            except OSError:
+                pass
             superseded.append(request_id)
             continue
         if (

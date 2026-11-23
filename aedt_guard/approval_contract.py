@@ -144,7 +144,7 @@ def _supersede_pending(builder_id: str, new_request_id: str) -> list[str]:
         }
         _archive(existing, "superseded", superseded_by=new_request_id)
         try:
-            _atomic_json(Path(str(existing["request_path"])), tombstone)
+            Path(str(existing["request_path"])).unlink(missing_ok=True)
         except OSError:
             pass
         _write_sidecar(str(existing.get("candidate") or ""), tombstone)
@@ -196,6 +196,17 @@ def _reconcile() -> dict[str, list[str]]:
       schema additions is archived as ``approved`` (already applied).
     """
     result = {"superseded": [], "already_applied": []}
+    # Older versions left superseded tombstones in pending/; retire them.
+    try:
+        for path in pending_dir().glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("status") == "superseded":
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass
     try:
         builders = load_allowlist().get("builders") or {}
     except Exception:  # noqa: BLE001 - reconciliation must never block the GUI
@@ -247,7 +258,7 @@ def _reconcile() -> dict[str, list[str]]:
             }
             _archive(pending, "superseded", superseded_by=newer[0].get("request_id"))
             try:
-                _atomic_json(Path(str(pending["request_path"])), tombstone)
+                Path(str(pending["request_path"])).unlink(missing_ok=True)
             except OSError:
                 pass
             _write_sidecar(str(pending.get("candidate") or ""), tombstone)
