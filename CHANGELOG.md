@@ -27,6 +27,13 @@
   `submit_guarded_run` also records `builder_id="guarded_run"` provenance, so manual runs that
   bypass the approved builder remain visible. This is visibility/evidence, not yet task-mode
   enforcement.
+- **Approval preflight / wait / budget (2026-11-23).** `request_builder_approval` now runs a
+  server-side preflight: candidate compiles, `run()` arguments must be present in the allowlist
+  or declared in the same request, declared parameter schemas are validated, and a static risk
+  level is recorded. Failures return `status=preflight_failed` and create no pending request.
+  New `wait_for_builder_approval` waits once for a terminal decision instead of polling; timeout
+  is an explicit parked state. Optional `approval_budget_per_day` per builder caps churn and
+  asks the agent to consolidate. `docs/APPROVAL_POLICY.md` is the contract. Tests 510.
 - **Native report-image export (2026-11-23).** New fixed read-only
   `export_report_image` MCP tool exports AEDT-native 3D Polar / E-plane / H-plane JPGs from
   solved data for any frequency, plot selection and image size. E uses the dB-radial

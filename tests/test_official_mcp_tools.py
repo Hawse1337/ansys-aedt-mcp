@@ -89,6 +89,7 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
             "open_project",
             "request_builder_approval",
             "run_approved_builder",
+            "wait_for_builder_approval",
             "run_python_code",
             "run_python_script",
             "save_project",
@@ -98,7 +99,7 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
         registered = {tool.name for tool in await mcp_server.mcp.list_tools()}
 
         self.assertTrue(expected.issubset(registered))
-        self.assertEqual(len(registered), 66)  # + request_builder_approval, export_report_image
+        self.assertEqual(len(registered), 67)  # + request/wait approval, export_report_image
 
     async def test_targeted_status_and_connect_use_explicit_target(self):
         status = await mcp_server.check_aedt_status(pid=101)

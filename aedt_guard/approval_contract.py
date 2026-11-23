@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .approval_policy import PreflightFailure, preflight_candidate
 from .builders import load_allowlist
 from .managed import state_dir
 
@@ -27,6 +28,12 @@ STATUSES = {"pending", "approved", "denied", "expired", "cancelled", "superseded
 
 class ApprovalRequestError(ValueError):
     pass
+
+
+class ApprovalPreflightError(ApprovalRequestError):
+    def __init__(self, message: str, preflight: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.preflight = preflight or {}
 
 
 def requests_root() -> Path:
@@ -260,6 +267,45 @@ def reconcile_requests() -> dict[str, list[str]]:
     return result
 
 
+def recent_request_count(builder_id: str, *, hours: float = 24.0) -> int:
+    """Count this builder's requests created in the recent window."""
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(0.1, float(hours)))
+    rows = list_requests("pending") + list_requests("approved")
+    rows += list_requests("denied") + list_requests("superseded")
+    count = 0
+    for row in rows:
+        if row.get("builder_id") != builder_id:
+            continue
+        try:
+            created = datetime.fromisoformat(str(row.get("requested_at") or ""))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if created >= cutoff:
+            count += 1
+    return count
+
+
+def _enforce_budget(builder_id: str, entry: dict[str, Any]) -> None:
+    try:
+        budget = int(entry.get("approval_budget_per_day") or 0)
+    except (TypeError, ValueError):
+        budget = 0
+    if budget <= 0:
+        return
+    used = recent_request_count(builder_id)
+    if used >= budget:
+        raise ApprovalRequestError(
+            "approval budget exceeded for %s: %d requests in the last 24h (limit %d); "
+            "consolidate the candidate and include all required parameters/test evidence "
+            "in one request instead of submitting incremental fixes"
+            % (builder_id, used, budget)
+        )
+
+
 def build_request(
     builder_id: str,
     candidate_path: str,
@@ -282,6 +328,15 @@ def build_request(
     entry = _get_builder_entry(builder_id)
     candidate = _validate_candidate(candidate_path)
     candidate_sha = _sha256(candidate)
+    preflight_request = {
+        "tested": [str(item) for item in (tested or [])],
+        "new_params": [dict(item) for item in (new_params or []) if isinstance(item, dict)],
+        "new_enum_values": {str(k): list(v) for k, v in (new_enum_values or {}).items() if isinstance(v, list)},
+    }
+    try:
+        preflight = preflight_candidate(candidate, entry=entry, request=preflight_request)
+    except PreflightFailure as exc:
+        raise ApprovalPreflightError(str(exc), getattr(exc, "details", None)) from exc
     # Retire applied/superseded requests before deciding whether a new one is
     # needed. This is what prevents an operator from having to approve a code
     # change that is already active.
@@ -306,6 +361,7 @@ def build_request(
         and not (new_enum_values or {})
     ):
         return _already_applied_record(builder_id, candidate, candidate_sha, entry)
+    _enforce_budget(builder_id, entry)
     request_id = uuid.uuid4().hex
     superseded = _supersede_pending(builder_id, request_id)
     record: dict[str, Any] = {
@@ -334,6 +390,7 @@ def build_request(
         "operator_action": "review_candidate_and_schema",
         "created_by": "aedt_guard",
         "superseded_requests": superseded,
+        "preflight": preflight,
     }
     path = pending_dir() / (request_id + ".json")
     _atomic_json(path, record)

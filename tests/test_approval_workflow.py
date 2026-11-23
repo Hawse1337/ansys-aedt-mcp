@@ -96,7 +96,7 @@ def test_atomic_approval_adds_schema_with_hash(tmp_path: Path, monkeypatch):
         "candidate.py",
         "def run(design=None, r_rim_mm=92.4):\n    return design, r_rim_mm\n",
     )
-    record, _ = contract.build_request("demo", str(candidate), "add aperture")
+    record, _ = contract.build_request("demo", str(candidate), "add aperture", new_params=[{"name": "r_rim_mm", "type": "number", "min": 50, "max": 130}])
     pending = approval_inbox.list_pending()
     assert pending[0]["request_id"] == record["request_id"]
     result = approval_apply.apply_request(
@@ -131,7 +131,7 @@ def test_low_risk_policy_accepts_small_existing_function_change(tmp_path: Path, 
         "def run(design=None, r_rim_mm=92.4):\n    # profile\n    return design, r_rim_mm\n",
     )
     entry = json.loads(allowlist.read_text(encoding="utf-8"))["builders"]["demo"]
-    request, _ = contract.build_request("demo", str(candidate), "safe change")
+    request, _ = contract.build_request("demo", str(candidate), "safe change", new_params=[{"name": "r_rim_mm", "type": "number", "min": 50, "max": 130}])
     safe, reasons = auto_approval.low_risk(request, entry)
     assert safe, reasons
     report = auto_approval.auto_approve_pending(

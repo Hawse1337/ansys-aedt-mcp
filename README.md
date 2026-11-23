@@ -115,9 +115,15 @@ for **低风险自动批准** (off by default; strict static policy, audit-only,
 [docs/BUILDERS.md](docs/BUILDERS.md#request-supersede-and-reconciliation-v1.4).
 
 Basic native report images now have a fixed read-only tool, `export_report_image`
-(`3d` / `e` / `h`, arbitrary solved frequency and image size). It does not rebuild or solve and
-does not require a builder/allowlist approval; changing frequency is just an argument. See
+(`3d` / `e` / `h`, arbitrary solved frequency and image size; `report_name` for an existing
+saved report). It does not rebuild or solve and does not require a builder/allowlist approval;
+changing frequency is just an argument. See
 [docs/BUILDERS.md](docs/BUILDERS.md#native-report-image-export-no-allowlist-approval).
+
+Approval requests now run a mandatory server-side preflight (compile, `run()` argument vs
+schema completeness, declared-parameter shape, static risk) and can be waited on once with
+`wait_for_builder_approval` instead of polling. Optional per-builder daily budgets prevent
+approval churn. See [docs/APPROVAL_POLICY.md](docs/APPROVAL_POLICY.md).
 
 ## Verification
 

@@ -556,7 +556,11 @@ async def request_builder_approval(
             reason="fix half-model port integration line and boundaries",
         )
     """
-    from aedt_guard.approval_contract import ApprovalRequestError, build_request
+    from aedt_guard.approval_contract import (
+        ApprovalPreflightError,
+        ApprovalRequestError,
+        build_request,
+    )
 
     audit_args = {
         "builder_id": builder_id,
@@ -578,6 +582,22 @@ async def request_builder_approval(
             tested=tested,
             risk_notes=risk_notes,
         )
+    except ApprovalPreflightError as exc:
+        _audit_worker_call(
+            "request_builder_approval",
+            pid=None,
+            port=None,
+            arguments=audit_args,
+            outcome="refused",
+            detail="preflight failed: %s" % str(exc)[:500],
+        )
+        return {
+            "refused": True,
+            "status": "preflight_failed",
+            "reason": str(exc),
+            "preflight": getattr(exc, "preflight", {}),
+            "next_step": "fix_candidate_or_declare_missing_schema_and_retry",
+        }
     except (ApprovalRequestError, ValueError, OSError) as exc:
         _audit_worker_call(
             "request_builder_approval",
@@ -608,11 +628,68 @@ async def request_builder_approval(
         "candidate_sha256": record["candidate_sha256"],
         "old_approved_sha256": record["old_approved_sha256"],
         "already_approved": bool(record.get("already_approved")),
+        "preflight": record.get("preflight") or {},
         "superseded_requests": list(record.get("superseded_requests") or []),
         "next_step": "retry_run_approved_builder" if approved_already else "wait_for_operator_approval",
         "operator_action": "" if approved_already else "open AEDT Builder Approver",
         "request": record,
     }
+
+
+@mcp.tool()
+async def wait_for_builder_approval(
+    request_id: str,
+    timeout_s: float = 1800.0,
+    poll_interval_s: float = 5.0,
+) -> dict[str, Any]:
+    """Wait for one approval request once instead of polling in a loop.
+
+    Returns as soon as the request is approved/denied/superseded, or at the
+    timeout. On timeout, park the task and continue independent work; do not
+    call this repeatedly in a tight loop. Check ``next_step`` for the action.
+    """
+    from aedt_guard.approval_contract import get_request, reconcile_requests
+
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ValueError("request_id is required")
+    timeout = max(1.0, float(timeout_s))
+    poll = max(1.0, float(poll_interval_s))
+    deadline = time.monotonic() + timeout
+    while True:
+        reconcile_requests()
+        found = get_request(request_id.strip())
+        if found is None:
+            return {
+                "request_id": request_id,
+                "status": "missing",
+                "terminal": True,
+                "next_step": "request_builder_approval",
+            }
+        data, _path = found
+        status = str(data.get("status") or "")
+        if status != "pending":
+            return {
+                "request_id": request_id,
+                "status": status,
+                "terminal": True,
+                "request": data,
+                "next_step": (
+                    "retry_run_approved_builder"
+                    if status == "approved"
+                    else "request_builder_approval"
+                ),
+            }
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "request_id": request_id,
+                "status": "pending",
+                "terminal": False,
+                "timed_out": True,
+                "request": data,
+                "next_step": "park_task_and_wait_for_operator",
+            }
+        await asyncio.sleep(min(poll, remaining))
 
 
 @mcp.tool()
