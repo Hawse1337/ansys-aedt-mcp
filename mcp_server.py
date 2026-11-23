@@ -726,6 +726,7 @@ async def run_approved_builder(
     ``source=aster`` and a campaign id. This is visibility, not a security boundary.
     """
     import shutil
+    import tempfile
     import time
     import uuid
 
@@ -733,6 +734,8 @@ async def run_approved_builder(
         BuilderError,
         get_builder,
         load_allowlist,
+        sha256_file,
+        target_digest,
         validate_output_dir,
         validate_params,
         validate_project,
@@ -762,14 +765,20 @@ async def run_approved_builder(
             extra={"requested_project": project_path},
         )
 
+    request = {"builder_id": builder_id, "project_path": project_path, "params": params or {},
+               "outdir": outdir, "pid": pid, "port": port}
+    project_digest = None
     try:
         allowlist = load_allowlist()
         entry = get_builder(allowlist, builder_id)
-        cleaned = validate_params(entry, params)
+        request["script_sha256"] = entry["sha256"]
         final_outdir = validate_output_dir(entry, outdir)
         final_project = validate_project(project_path)
         for candidate, label in ((final_project, "project_path"), (final_outdir, "outdir")):
             _reject_guard_state_path(candidate, label)
+        project_digest = target_digest(entry, final_project, (params or {}).get("design"))
+        request.update(project_path=final_project, outdir=final_outdir, project_sha256=project_digest)
+        cleaned = validate_params(entry, params)
     except (BuilderError, ValueError, OSError) as exc:
         reason = str(exc)
         _audit_worker_call(
@@ -779,6 +788,7 @@ async def run_approved_builder(
         )
         response: dict[str, Any] = {
             "refused": True,
+            "executed": False,
             "builder_id": builder_id,
             "reason": reason,
             "provenance": _record_provenance("refused", error=reason),
@@ -797,7 +807,9 @@ async def run_approved_builder(
                     },
                 }
             )
-        elif "not allowed" in reason or "missing required" in reason or "must be one of" in reason:
+        elif any(fragment in reason for fragment in (
+            "not allowed", "missing required", "must be one of", "below minimum", "above maximum"
+        )):
             response.update(
                 {
                     "status": "approval_required",
@@ -812,20 +824,25 @@ async def run_approved_builder(
                     },
                 }
             )
+        if response.get("approval_required"):
+            response["request"] = request
         return response
 
     work_root = Path(final_outdir) / "_work"
-    work_dir = work_root / uuid.uuid4().hex
+    work_dir = None
     retain_work = False
     launched: dict[str, Any] | None = None
     launched_pid: int | None = None
     try:
-        work_dir.mkdir(parents=True, exist_ok=True)
+        work_root.mkdir(parents=True, exist_ok=True)
+        work_dir = Path(tempfile.mkdtemp(prefix="w", dir=work_root))
         # Unique stem: PyAEDT matches an already-open project by file stem, so a copy that keeps
         # the original name could silently attach to and mutate the original project.
-        working_name = "p0work_%s_%s" % (uuid.uuid4().hex, Path(final_project).name)
+        working_name = "p0work_%s%s" % (uuid.uuid4().hex, Path(final_project).suffix)
         working_project = work_dir / working_name
         shutil.copy2(final_project, working_project)
+        if project_digest and sha256_file(working_project) != project_digest:
+            raise BuilderError("source project changed during preparation")
         if pid is None and port is None:
             launched = await launch_aedt(non_graphical=True)
             launched_pid = int(launched["pid"])
@@ -915,7 +932,7 @@ async def run_approved_builder(
                 pass
         raise
     finally:
-        if not retain_work:
+        if not retain_work and work_dir is not None:
             shutil.rmtree(work_dir, ignore_errors=True)
             try:
                 work_root.rmdir()
@@ -1927,6 +1944,7 @@ def spec_create(
     metrics: list[dict[str, Any]],
     evaluation: dict[str, Any] | None = None,
     execution_policy: dict[str, Any] | None = None,
+    objectives: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Create the versioned design specification for one campaign (v1.6)."""
     spec = new_spec(
@@ -1936,6 +1954,7 @@ def spec_create(
         metrics,
         evaluation=evaluation,
         execution_policy=execution_policy,
+        objectives=objectives,
     )
     paths = _campaign_paths(campaign_dir)
     paths["root"].mkdir(parents=True, exist_ok=True)

@@ -11,6 +11,7 @@ from pyaedt_capabilities import OfficialCapabilities
 
 
 class _FakeDesktop:
+    are_there_simulations_running = False
     def __init__(self, pid: int = 4321) -> None:
         self.aedt_process_id = pid
 

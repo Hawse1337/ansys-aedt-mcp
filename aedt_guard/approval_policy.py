@@ -16,6 +16,7 @@ runs cheap, deterministic checks before a request is written:
 from __future__ import annotations
 
 import ast
+import math
 import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -80,8 +81,9 @@ def _schema_names(entry: Mapping[str, Any], request: Mapping[str, Any]) -> set[s
     return names
 
 
-def _validate_declared_params(request: Mapping[str, Any]) -> list[str]:
+def _validate_declared_params(request: Mapping[str, Any], entry: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
+    declared: dict[str, Any] = {}
     for spec in request.get("new_params") or []:
         if not isinstance(spec, dict):
             errors.append("new_params contains a non-object entry")
@@ -91,20 +93,31 @@ def _validate_declared_params(request: Mapping[str, Any]) -> list[str]:
         if not isinstance(name, str) or not _NAME_RE.match(name):
             errors.append("new parameter name %r is invalid" % (name,))
             continue
+        if name in declared:
+            errors.append("duplicate parameter declaration %r" % name)
+        declared[name] = spec
+        if "required" in spec and type(spec["required"]) is not bool:
+            errors.append("parameter %r required must be a boolean" % name)
         if kind not in _PARAM_TYPES:
             errors.append("parameter %r has unsupported type %r" % (name, kind))
-        if kind == "enum" and not isinstance(spec.get("values"), list):
+        if kind == "enum" and not (isinstance(spec.get("values"), list) and spec["values"]):
             errors.append("enum parameter %r has no values list" % name)
         if kind == "number":
             for bound in ("min", "max"):
                 value = spec.get(bound)
-                if value is not None and not isinstance(value, (int, float)):
+                if value is not None and (type(value) not in (int, float) or not math.isfinite(value)):
                     errors.append("number parameter %r has non-numeric %s" % (name, bound))
+            low, high = spec.get("min"), spec.get("max")
+            if type(low) in (int, float) and type(high) in (int, float) and low > high:
+                errors.append("number parameter %r minimum exceeds maximum" % name)
     for name, values in (request.get("new_enum_values") or {}).items():
         if not isinstance(name, str) or not _NAME_RE.match(name):
             errors.append("new_enum_values key %r is invalid" % (name,))
         if not isinstance(values, list):
             errors.append("new_enum_values[%r] must be a list" % name)
+        target = declared.get(name) or (entry.get("params") or {}).get(name) or {}
+        if target.get("type") != "enum":
+            errors.append("enum addition requires an existing or declared enum parameter %r" % name)
     return errors
 
 
@@ -184,7 +197,7 @@ def preflight_candidate(
             "run() arguments are not in allowlist/request: %s; add them to new_params "
             "in the same request" % ", ".join(missing)
         )
-    declared_errors = _validate_declared_params(request)
+    declared_errors = _validate_declared_params(request, entry)
     checks["declared_params_valid"] = not declared_errors
     errors.extend(declared_errors)
     tested = [str(item) for item in (request.get("tested") or []) if str(item).strip()]

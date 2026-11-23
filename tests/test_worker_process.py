@@ -162,7 +162,7 @@ class WorkerClientTests(unittest.TestCase):
         path.write_text(source, encoding="utf-8")
         return path
 
-    def _client(self, script, timeout=2.0):
+    def _client(self, script, timeout=15.0):
         client = WorkerClient(
             worker_script=script,
             python_executable=sys.executable,
@@ -233,7 +233,7 @@ for line in sys.stdin:
         )
 
         result = self._client(script).execute(
-            AedtTarget("pid", 7), "ping", {}, timeout=1.0
+            AedtTarget("pid", 7), "ping", {}
         )
 
         self.assertEqual(result, {"pid": 7})
@@ -256,7 +256,10 @@ for line in sys.stdin:
         self.assertLess(time.monotonic() - started, 5.0)
         broker = client._brokers['pid:7']
         self.assertIsNotNone(broker.pending_request)
-        time.sleep(0.5)
+        deadline = time.monotonic() + 15
+        while broker.responses.empty() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(broker.responses.empty(), "worker never returned the late response")
         with self.assertRaises(WorkerRecoveredError):
             client.execute(AedtTarget('pid',7),'ping',{})
 

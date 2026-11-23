@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from approval_inbox import archive_dir, pending_dir
+from approval_inbox import archive_dir, file_lock, inbox_transaction, pending_dir, requests_root
 from builder_schema import apply_suggestions, detect_candidate_schema, validate_schema
 
 
@@ -53,6 +53,8 @@ def save_allowlist(path: str | Path, data: dict[str, Any]) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, target)
     finally:
         try:
@@ -107,10 +109,15 @@ def merge_schema(
         if not name:
             continue
         existing = merged.get(name)
-        if existing is None:
+        if name not in current:
+            # An inferred type/default is only a suggestion. The operator's
+            # explicit declaration supplies the bounds and allowed enum values.
             merged[name] = {key: value for key, value in spec.items() if key != "name"}
-            changes.append("+ %s (request)" % name)
-        elif existing.get("type") == "enum" and spec.get("type") == "enum":
+            if name not in detected:
+                changes.append("+ %s (request)" % name)
+        elif existing.get("type") != spec.get("type"):
+            return merged, changes, ["type conflict for existing parameter %r" % name]
+        elif existing.get("type") == "enum":
             values = list(existing.get("values") or [])
             for value in spec.get("values") or []:
                 if value not in values:
@@ -130,6 +137,42 @@ def merge_schema(
     return merged, changes, errors
 
 
+def commit_entry(allowlist_path, builder_id, previous, updated):
+    """Replace one entry after checking that the reviewed entry is still current."""
+    path = Path(allowlist_path)
+    with file_lock(path.with_name(path.name + ".lock")):
+        data = load_allowlist(path)
+        if data["builders"].get(builder_id) != previous:
+            raise ApprovalApplyError("builder entry changed since review; refresh before approving")
+        if path.is_file():
+            backup = path.with_name(path.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
+            shutil.copy2(path, backup)
+        data["builders"][builder_id] = updated
+        save_allowlist(path, data)
+
+
+def stage_script(candidate, approved_dir, builder_id, expected):
+    """Publish reviewed bytes at an immutable name before switching the allowlist."""
+    content = Path(candidate).read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != expected:
+        raise ApprovalApplyError("candidate changed since review")
+    root = Path(approved_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / (builder_id + "." + digest + ".py")
+    fd, temp = tempfile.mkstemp(prefix=".builder-", suffix=".tmp", dir=root)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, target)
+    finally:
+        Path(temp).unlink(missing_ok=True)
+    return target
+
+
+@inbox_transaction(requests_root)
 def apply_request(
     request: dict[str, Any],
     *,
@@ -138,6 +181,8 @@ def apply_request(
     decided_by: str = "",
     note: str = "",
     auto_approved: bool = False,
+    expected_entry: dict | None = None,
+    expected_params: dict | None = None,
 ) -> dict[str, Any]:
     """Approve one request atomically; never called by the guard itself."""
     if str(request.get("status") or "") != "pending":
@@ -147,31 +192,38 @@ def apply_request(
     candidate = Path(str(request.get("candidate") or "")).expanduser()
     if not request_id or not builder_id or not candidate.is_file():
         raise ApprovalApplyError("request has no valid candidate/builder")
+    path = pending_dir() / (request_id + ".json")
+    try:
+        pending = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ApprovalApplyError("request is no longer pending; refresh the inbox") from exc
+    if pending.get("status") != "pending" or any(
+        pending.get(key) != request.get(key) for key in ("request_id", "builder_id", "candidate",
+            "candidate_sha256", "old_approved_sha256", "new_params", "new_enum_values")
+    ):
+        raise ApprovalApplyError("pending request has changed; refresh the inbox")
+    request = pending
     expected_candidate = str(request.get("candidate_sha256") or "").lower()
     actual_candidate = _sha256(candidate)
-    if expected_candidate and expected_candidate != actual_candidate:
+    if expected_candidate != actual_candidate:
         raise ApprovalApplyError("candidate changed after the request was created")
     data = load_allowlist(allowlist_path)
     entry = data["builders"].get(builder_id)
     if not isinstance(entry, dict):
         raise ApprovalApplyError("unknown builder %r" % builder_id)
-    merged, changes, errors = merge_schema(entry, candidate, request)
+    if str(entry.get("sha256") or "").lower() != str(request.get("old_approved_sha256") or "").lower():
+        raise ApprovalApplyError("approved builder changed since this request")
+    if expected_entry is not None and expected_entry != entry:
+        raise ApprovalApplyError("builder entry changed since review")
+    previous_entry = dict(entry)
+    target = stage_script(candidate, approved_dir, builder_id, expected_candidate)
+    merged, changes, errors = merge_schema(entry, target, request)
+    if expected_params is not None and expected_params != merged:
+        raise ApprovalApplyError("parameter schema changed since review")
     if errors:
         raise ApprovalApplyError("schema is not valid: %s" % "; ".join(errors))
 
-    target_dir = Path(approved_dir)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / (builder_id + ".py")
-    if Path(allowlist_path).is_file():
-        backup = Path(allowlist_path).with_name(
-            Path(allowlist_path).name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S")
-        )
-        try:
-            shutil.copy2(allowlist_path, backup)
-        except OSError:
-            pass
-    shutil.copy2(candidate, target)
-    digest = _sha256(target)
+    digest = expected_candidate
     approved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     previous = str(entry.get("sha256") or "").lower()
     entry["script"] = str(target.resolve())
@@ -181,7 +233,7 @@ def apply_request(
     meta.update(
         {
             "candidate": str(candidate),
-            "candidate_sha256": expected_candidate or actual_candidate,
+            "candidate_sha256": expected_candidate,
             "approved_sha256": digest,
             "previous_sha256": previous,
             "approved_at": approved_at,
@@ -191,8 +243,7 @@ def apply_request(
         }
     )
     entry["approval"] = meta
-    data["builders"][builder_id] = entry
-    save_allowlist(allowlist_path, data)
+    commit_entry(allowlist_path, builder_id, previous_entry, entry)
 
     archived = dict(request)
     archived.update(

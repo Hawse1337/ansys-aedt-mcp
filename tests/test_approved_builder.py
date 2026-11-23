@@ -223,6 +223,20 @@ def test_reserved_parameter_names_are_rejected(tmp_path: Path):
             validate_params(builder, {"theta_deg": 20, "family": "A", name: 1})
 
 
+def test_source_version_follows_declared_project_and_design(tmp_path: Path):
+    from aedt_guard.builders import sha256_file, target_digest
+
+    project = tmp_path / "design.aedt"
+    project.write_bytes(b"version 1")
+    digest = sha256_file(project)
+    target = {"project_path": str(project), "design": "Lens", "project_sha256": digest}
+    assert target_digest({"targets": [target]}, str(project), "Lens") == digest
+    assert target_digest({}, str(project), "Lens") is None
+    project.write_bytes(b"version 2")
+    with pytest.raises(BuilderError, match="declared digest"):
+        target_digest({"targets": [target]}, str(project), "Lens")
+
+
 def test_guard_status_reports_builder_allowlist(tmp_path: Path, monkeypatch):
     import asyncio
 

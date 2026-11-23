@@ -18,6 +18,7 @@ pythonpath = ["."]
 [tool.setuptools]
 packages = ["aedt_guard"]
 py-modules = [
+    "guard_file_lock",
     "aedt_target",
     "aedt_installation",
     "aedt_guidelines",

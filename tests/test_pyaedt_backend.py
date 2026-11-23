@@ -25,6 +25,7 @@ class FakeProject:
 
 
 class FakeDesktop:
+    are_there_simulations_running = False
     def __init__(self, *, fail_projects=False, is_grpc_api=None, **kwargs):
         self.kwargs = kwargs
         self.fail_projects = fail_projects
@@ -262,6 +263,22 @@ class PyAedtBackendTests(unittest.TestCase):
         self.assertEqual(result["not_found"], ["Missing"])
         self.assertEqual(result["remaining"], ["Keep"])
         self.assertFalse(result["saved_before_close"])
+
+    def test_close_requires_idle_desktop_and_confirmed_save(self):
+        desktop = FakeDesktop(aedt_process_id=15488)
+        backend = PyAedtBackend(desktop_factory=lambda **kwargs: desktop)
+        for status in (True, None):
+            desktop.are_there_simulations_running = status
+            with self.assertRaises(BackendCommandError):
+                backend.execute(AedtTarget("pid", 15488), "close_projects",
+                                {"project_names": ["Demo"], "save": True})
+        self.assertEqual(desktop.saved, [])
+        desktop.are_there_simulations_running = False
+        desktop.save_project = lambda name: False
+        with self.assertRaisesRegex(BackendCommandError, "confirm save"):
+            backend.execute(AedtTarget("pid", 15488), "close_projects",
+                            {"project_names": ["Demo"], "save": True})
+        self.assertEqual(desktop.closed, [])
 
     def test_start_analysis_is_non_blocking(self):
         result = self.backend.execute(

@@ -40,6 +40,20 @@ class CapabilityError(ValueError):
     pass
 
 
+def require_idle_desktop(desktop):
+    """Read native desktop-wide solver status immediately before a close."""
+    try:
+        running = desktop.are_there_simulations_running
+        if callable(running):
+            running = running()
+    except Exception as exc:
+        raise CapabilityError("cannot confirm idle AEDT desktop before close") from exc
+    if type(running) not in (bool, int, float) or not math.isfinite(running) or running < 0:
+        raise CapabilityError("cannot confirm idle AEDT desktop before close")
+    if running:
+        raise CapabilityError("cannot close while simulations are running on this desktop")
+
+
 APPLICATION_TYPES = (
     "Hfss",
     "Maxwell2d",
@@ -491,6 +505,8 @@ class OfficialCapabilities:
     def _disconnect_from_aedt(self, desktop, target, arguments, connection_kwargs):
         close_projects = _boolean(arguments, "close_projects", False)
         close_desktop = _boolean(arguments, "close_desktop", False)
+        if close_projects or close_desktop:
+            require_idle_desktop(desktop)
         pid = getattr(desktop, "aedt_process_id", None)
         pid_create_time: float | None = None
         if close_desktop and isinstance(pid, int) and pid > 0:
@@ -636,6 +652,7 @@ class OfficialCapabilities:
         closed = []
         if close_projects:
             for project in projects:
+                require_idle_desktop(desktop)
                 desktop.odesktop.CloseProject(project)
                 closed.append(project)
             self._apps.clear()

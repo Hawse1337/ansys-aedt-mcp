@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -109,7 +111,7 @@ def test_atomic_approval_adds_schema_with_hash(tmp_path: Path, monkeypatch):
     data = json.loads(allowlist.read_text(encoding="utf-8"))
     entry = data["builders"]["demo"]
     assert entry["sha256"] == sha256_file(candidate)
-    assert "r_rim_mm" in entry["params"]
+    assert entry["params"]["r_rim_mm"] == {"type": "number", "min": 50, "max": 130}
     assert contract.list_requests("pending") == []
     archived = json.loads(
         (tmp_path / "requests" / "archive" / (record["request_id"] + ".json")).read_text(encoding="utf-8")
@@ -155,3 +157,85 @@ def test_low_risk_policy_rejects_new_import(tmp_path: Path, monkeypatch):
     safe, reasons = auto_approval.low_risk(request, entry)
     assert safe is False
     assert any("imports" in reason for reason in reasons)
+
+
+def test_two_guard_processes_share_one_pending_request(tmp_path, monkeypatch):
+    current = _candidate(tmp_path, "current.py", "def run(design=None): return design\n")
+    _allowlist(tmp_path, current, monkeypatch)
+    candidate = _candidate(tmp_path, "next.py", current.read_text() + "# next\n")
+    command = [sys.executable, "-B", "-c",
+               "import sys; from aedt_guard.approval_contract import build_request; "
+               "print(build_request('demo',sys.argv[1],'revision')[0]['request_id'])", str(candidate)]
+    processes = [subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, text=True) for _ in range(3)]
+    ids = [process.communicate(timeout=30)[0].strip() for process in processes]
+    assert all(process.returncode == 0 for process in processes)
+    assert len(set(ids)) == 1
+    assert [row["request_id"] for row in contract.list_requests()] == [ids[0]]
+
+
+def test_revised_parameter_range_replaces_old_request(tmp_path, monkeypatch):
+    current = _candidate(tmp_path, "current.py", "def run(design=None): return design\n")
+    allowlist = _allowlist(tmp_path, current, monkeypatch)
+    candidate = _candidate(tmp_path, "next.py", "def run(design=None, radius_mm=5): return radius_mm\n")
+    def request(low, high):
+        spec = {"name": "radius_mm", "type": "number", "min": low, "max": high}
+        return contract.build_request("demo", str(candidate), "revision", new_params=[spec])[0]
+    first, second = request(1, 12), request(2, 8)
+    assert first["request_id"] != second["request_id"]
+    with pytest.raises(approval_apply.ApprovalApplyError, match="pending"):
+        approval_apply.apply_request(first, allowlist_path=allowlist, approved_dir=tmp_path/"approved")
+    approval_apply.apply_request(second, allowlist_path=allowlist, approved_dir=tmp_path/"approved")
+    entry = approval_apply.load_allowlist(allowlist)["builders"]["demo"]
+    assert entry["params"]["radius_mm"] == {"type": "number", "min": 2, "max": 8}
+
+
+def test_failed_allowlist_commit_preserves_approved_bytes(tmp_path, monkeypatch):
+    current = _candidate(tmp_path, "current.py", "def run(design=None): return design\n")
+    allowlist = _allowlist(tmp_path, current, monkeypatch)
+    def approve(candidate):
+        row, _ = contract.build_request("demo", str(candidate), "normal revision")
+        return approval_apply.apply_request(row, allowlist_path=allowlist, approved_dir=tmp_path/"approved")
+    first = _candidate(tmp_path, "first.py", current.read_text() + "# revision 1\n")
+    second = _candidate(tmp_path, "second.py", current.read_text() + "# revision 2\n")
+    approve(first)
+    baseline = approval_apply.load_allowlist(allowlist)
+    def unavailable(*args):
+        raise OSError("storage unavailable")
+    monkeypatch.setattr(approval_apply, "save_allowlist", unavailable)
+    with pytest.raises(OSError, match="storage unavailable"):
+        approve(second)
+    assert approval_apply.load_allowlist(allowlist) == baseline
+    assert Path(baseline["builders"]["demo"]["script"]).read_bytes() == first.read_bytes()
+
+
+def test_reconcile_recovers_schema_approval_after_archive_write_interruption(tmp_path, monkeypatch):
+    current = _candidate(tmp_path, "current.py", "def run(design=None): return design\n")
+    allowlist = _allowlist(tmp_path, current, monkeypatch)
+    candidate = _candidate(tmp_path, "next.py", "def run(design=None, radius_mm=5): return radius_mm\n")
+    row, _ = contract.build_request("demo", str(candidate), "dimension",
+                  new_params=[{"name": "radius_mm", "type": "number", "min": 2, "max": 8}])
+    def unavailable(*args):
+        raise OSError("archive unavailable")
+    monkeypatch.setattr(approval_apply, "_atomic_json", unavailable)
+    with pytest.raises(OSError, match="archive unavailable"):
+        approval_apply.apply_request(row, allowlist_path=allowlist, approved_dir=tmp_path/"approved")
+    assert contract.reconcile_requests()["already_applied"] == [row["request_id"]]
+    assert contract.get_request(row["request_id"])[0]["status"] == "approved"
+
+
+def test_approve_candidate_from_long_local_path(tmp_path, monkeypatch):
+    current = _candidate(tmp_path, "current.py", "def run(design=None): return design\n")
+    allowlist = _allowlist(tmp_path, current, monkeypatch)
+    nested = tmp_path
+    while len(str(nested)) < 275:
+        nested = nested / "candidate-source-history"
+    try:
+        nested.mkdir(parents=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 206:
+            pytest.skip("host disallows long paths")
+        raise
+    candidate = _candidate(nested, "geometry.py", current.read_text() + "# revision\n")
+    request, _ = contract.build_request("demo", str(candidate), "long source path")
+    result = approval_apply.apply_request(request, allowlist_path=allowlist, approved_dir=tmp_path/"approved")
+    assert result["sha256"] == sha256_file(candidate)

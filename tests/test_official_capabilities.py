@@ -129,6 +129,7 @@ class FakeApp:
 
 
 class FakeDesktop:
+    are_there_simulations_running = False
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.aedt_version_id = "2026.1"

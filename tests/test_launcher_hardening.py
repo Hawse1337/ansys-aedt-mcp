@@ -4,6 +4,7 @@ import os
 import aedt_launcher
 import tempfile
 import sys
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -26,6 +27,7 @@ class LauncherRegressionTests(unittest.TestCase):
         (self.install / 'ansysedt.exe').write_bytes(b'not executable')
         self.process = Mock(pid=12345)
         self.process.poll.return_value = None
+        self.process.wait.return_value = 0
         self.factory = Mock(return_value=self.process)
         self.worker = Mock()
         self.worker.execute.return_value = {'connected': True, 'pid': 12345, 'port':50051, 'aedt_version': '2026.1'}
@@ -71,6 +73,18 @@ class LauncherRegressionTests(unittest.TestCase):
         self.assertEqual(self.worker.execute.call_args.kwargs['timeout'], 240)
         self.assertEqual(self.worker.execute.call_args.args[0].key, 'pid:12345')
         self.assertEqual(result['pid'], 12345)
+
+    def test_unconfirmed_orphan_exit_retains_session_and_does_not_spawn(self):
+        launcher = self.launcher()
+        with self.assertRaisesRegex(AedtLaunchError, 'timed out'):
+            launcher.launch(install_dir=self.install, timeout=1)
+        self.process.wait.side_effect = subprocess.TimeoutExpired('fake AEDT', 10)
+        with patch('aedt_guard.managed.discard_launch') as discard:
+            with self.assertRaisesRegex(AedtLaunchError, 'could not confirm exit'):
+                launcher.launch(install_dir=self.install, timeout=1)
+            discard.assert_not_called()
+        self.assertEqual(self.factory.call_count, 1)
+        self.assertIs(launcher._unfinished_launch[0], self.process)
 
     def test_handshake_error_does_not_kill_during_the_same_launch(self):
         self.worker.execute.side_effect = TimeoutError('connection pending')

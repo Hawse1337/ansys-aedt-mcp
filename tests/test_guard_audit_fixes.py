@@ -62,12 +62,15 @@ def test_create_design_path_is_preserved_by_normalizer(tmp_path: Path):
 
 def test_disconnect_release_error_is_reported(monkeypatch):
     class _Desktop:
+        are_there_simulations_running = False
         aedt_process_id = 4321
 
         def release_desktop(self, close_projects: bool = False, close_on_exit: bool = False) -> bool:
             raise RuntimeError("vendor release failed")
 
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(psutil, "Process", lambda pid: SimpleNamespace(
+        create_time=lambda: 100.0, name=lambda: "fixture.exe"))
     result = OfficialCapabilities()._disconnect_from_aedt(
         _Desktop(),
         AedtTarget(kind="pid", value=4321),

@@ -15,6 +15,7 @@ from pyaedt_capabilities import (
     OFFICIAL_BACKEND_COMMANDS,
     CapabilityError,
     OfficialCapabilities,
+    require_idle_desktop,
 )
 
 
@@ -1383,8 +1384,12 @@ class PyAedtBackend:
             if name not in available:
                 not_found.append(name)
                 continue
-            if save:
-                desktop.save_project(name)
+            try:
+                require_idle_desktop(desktop)
+            except CapabilityError as exc:
+                raise BackendCommandError(str(exc)) from exc
+            if save and not desktop.save_project(name):
+                raise BackendCommandError(f"could not confirm save before closing project {name!r}")
             desktop.odesktop.CloseProject(name)
             available.remove(name)
             closed.append(name)

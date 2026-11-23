@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from guard_file_lock import file_lock, inbox_transaction
+except ModuleNotFoundError:  # Running python tools/builder_approver_gui.py from a checkout
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from guard_file_lock import file_lock, inbox_transaction
 
 
 def requests_root() -> Path:
@@ -55,19 +62,20 @@ def list_pending() -> list[dict[str, Any]]:
     return rows
 
 
+@inbox_transaction(requests_root)
 def reconcile_requests(allowlist_path: str | Path | None = None) -> dict[str, list[str]]:
     """Retire requests that are already applied or replaced by a newer one.
 
     This is the GUI-side counterpart of the guard's reconciliation: it never
     changes an allowlist, it only moves stale pending files out of the inbox.
     """
-    current: dict[str, str] = {}
+    current: dict[str, dict] = {}
     try:
         if allowlist_path and Path(allowlist_path).is_file():
             data = json.loads(Path(allowlist_path).read_text(encoding="utf-8"))
             for builder_id, entry in (data.get("builders") or {}).items():
                 if isinstance(entry, dict) and entry.get("sha256"):
-                    current[str(builder_id)] = str(entry["sha256"]).lower()
+                    current[str(builder_id)] = entry
     except (OSError, ValueError):
         current = {}
     archives: list[dict[str, Any]] = []
@@ -112,9 +120,9 @@ def reconcile_requests(allowlist_path: str | Path | None = None) -> dict[str, li
             continue
         if (
             current.get(builder_id)
-            and current[builder_id] == str(pending.get("candidate_sha256") or "").lower()
-            and not (pending.get("new_params") or [])
-            and not (pending.get("new_enum_values") or {})
+            and str(current[builder_id]["sha256"]).lower() == str(pending.get("candidate_sha256") or "").lower()
+            and ((not pending.get("new_params") and not pending.get("new_enum_values"))
+                 or (current[builder_id].get("approval") or {}).get("request_id") == request_id)
         ):
             record = {
                 **pending,
@@ -148,6 +156,7 @@ def _atomic_json(path: Path, data: dict[str, Any]) -> None:
             pass
 
 
+@inbox_transaction(requests_root)
 def decide_request(
     request_id: str,
     status: str,

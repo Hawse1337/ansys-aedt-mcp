@@ -160,7 +160,11 @@ class AedtLauncher:
                 # A failed handshake left a guard-spawned AEDT that cannot be
                 # adopted.  Release it automatically instead of asking the
                 # operator to close the window by hand, then launch a clean one.
-                self._release_unfinished("readiness handshake failed and adoption failed")
+                if not self._release_unfinished("readiness handshake failed and adoption failed"):
+                    raise AedtLaunchError(
+                        f"could not confirm exit of guard-spawned AEDT PID {unfinished[0].pid}; "
+                        "retained session for recovery and did not launch a replacement"
+                    )
             return self._launch_once(version=version, port=port, install_dir=install_dir,
                                      non_graphical=non_graphical, timeout=timeout)
         except Exception:
@@ -241,20 +245,19 @@ class AedtLauncher:
         if unfinished is None:
             return False
         process, _port, _version, _non_graphical = unfinished
-        released = False
         try:
             if process.poll() is None:
                 process.terminate()
                 try:
-                    process.wait(timeout=10)
-                except Exception:  # noqa: BLE001
-                    try:
-                        process.kill()
-                    except Exception:  # noqa: BLE001
-                        pass
-            released = True
-        except Exception:  # noqa: BLE001 - cleanup is best effort
-            released = False
+                    exit_code = process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    exit_code = process.wait(timeout=10)
+                if type(exit_code) is not int:
+                    return False
+        except (OSError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                return False
         try:
             from aedt_guard.managed import discard_launch
 
@@ -262,7 +265,7 @@ class AedtLauncher:
         except Exception:  # noqa: BLE001
             pass
         self._unfinished_launch = None
-        return released
+        return True
 
     def _launch_once(
         self, *, version: str, port: int, install_dir: str | Path | None,

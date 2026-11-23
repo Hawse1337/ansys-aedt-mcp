@@ -18,11 +18,10 @@ import argparse
 import difflib
 import hashlib
 import json
-import os
-import shutil
 import sys
-import tempfile
 from pathlib import Path
+
+from approval_apply import commit_entry, stage_script
 
 GUARD_DIR = Path(r"C:\ProgramData\ansys-aedt-mcp")
 DEFAULT_ALLOWLIST = GUARD_DIR / "builders.local.json"
@@ -33,18 +32,6 @@ def load(path: Path) -> dict:
     if not path.is_file():
         raise SystemExit("allowlist not found: %s" % path)
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def save(path: Path, data: dict) -> None:
-    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    fd, tmp = tempfile.mkstemp(prefix="builders-", suffix=".json", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
 
 
 def sha256(path: Path) -> str:
@@ -105,16 +92,12 @@ def main() -> int:
     if not args.yes:
         raise SystemExit("refusing apply without --yes; review the diff first")
     approved_dir = Path(args.approved_dir).expanduser()
-    approved_dir.mkdir(parents=True, exist_ok=True)
-    target = approved_dir / (args.builder_id + Path(source).suffix if Path(source).suffix else args.builder_id + ".py")
-    shutil.copy2(source, target)
-    digest = sha256(target)
+    digest = sha256(source)
+    target = stage_script(source, approved_dir, args.builder_id, digest)
     old_script = entry.get("script")
     old_hash = entry.get("sha256")
-    entry["script"] = str(target.resolve())
-    entry["sha256"] = digest
-    allowed["builders"][args.builder_id] = entry
-    save(allowlist_path, allowed)
+    commit_entry(allowlist_path, args.builder_id, entry, {**entry, "script": str(target.resolve()),
+                                                          "sha256": digest})
     print("approved:", args.builder_id)
     print("script  :", entry["script"])
     print("sha256  :", digest)

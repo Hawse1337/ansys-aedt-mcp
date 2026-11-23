@@ -198,20 +198,21 @@ class BudgetTests(unittest.TestCase):
     def test_budget_breach_aborts_and_fails(self):
         spec = mcp_server.new_spec(
             "lens", "lens", [24.0, 30.0], _metrics(),
-            execution_policy={"max_run_minutes": 1e-9, "require_convergence": False},
+            execution_policy={"max_run_minutes": 0.05, "require_convergence": False},
         )
-        store = Store(self.root / "campaign.sqlite")
-        store.add_run("r1", "lens", 1, {})
-        adapter = BudgetAdapter()
-        runner = CampaignRunner(store=store, adapter=adapter, spec=spec, run_id="r1",
-                                artifact_dir=self.root / "runs" / "r1" / "artifacts")
-        self.assertEqual(runner.run(), FAILED)
-        self.assertEqual(adapter.aborted, 1)
-        detail = store.get_run("r1")
-        self.assertEqual(detail["status"], FAILED)
-        log = json.loads(detail["notes"])
-        self.assertIn("BUDGET_EXCEEDED", log[-1]["error"])
-        store.close()
+        with Store(self.root / "campaign.sqlite") as store:
+            store.add_run("r1", "lens", 1, {})
+            adapter = BudgetAdapter()
+            runner = CampaignRunner(store=store, adapter=adapter, spec=spec, run_id="r1",
+                                    artifact_dir=self.root / "runs" / "r1" / "artifacts")
+            with mock.patch("aedt_guard.sim.time", wraps=time) as clock:
+                clock.monotonic.side_effect = [10.0, 14.0]
+                self.assertEqual(runner.run(), FAILED)
+            self.assertEqual(adapter.aborted, 1)
+            detail = store.get_run("r1")
+            self.assertEqual(detail["status"], FAILED)
+            log = json.loads(detail["notes"])
+            self.assertIn("BUDGET_EXCEEDED", log[-1]["error"])
 
 
 class MultiFrequencyToolTests(unittest.TestCase):

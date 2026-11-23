@@ -186,3 +186,31 @@ def validate_project(project_path: str) -> str:
     if resolved.suffix.lower() != ".aedt" or not resolved.is_file():
         raise BuilderError("project_path must be an existing .aedt file: %s" % resolved)
     return str(resolved)
+
+
+def target_digest(entry: Mapping[str, Any], project_path: str, design: Any) -> str | None:
+    """Check an optional operator-pinned source/design and return its content identity."""
+    if "targets" not in entry:
+        return None
+    targets = entry["targets"]
+    if not isinstance(targets, list) or not targets or not isinstance(design, str) or not design:
+        raise BuilderError("a declared target requires a project and design")
+    matches = []
+    for item in targets:
+        if not isinstance(item, dict) or not isinstance(item.get("project_path"), str):
+            raise BuilderError("invalid builder target declaration")
+        path = Path(item["project_path"]).expanduser()
+        if not path.is_absolute() or not isinstance(item.get("design"), str) or not item["design"]:
+            raise BuilderError("invalid builder target path or design")
+        expected = item.get("project_sha256")
+        if expected is not None and (not isinstance(expected, str) or len(expected) != 64
+                or any(c not in "0123456789abcdefABCDEF" for c in expected)):
+            raise BuilderError("invalid target project digest")
+        if path.resolve() == Path(project_path) and item["design"] == design:
+            matches.append(expected.lower() if expected else None)
+    if not matches:
+        raise BuilderError("project and design are outside the declared targets")
+    actual = sha256_file(project_path)
+    if None not in matches and actual not in matches:
+        raise BuilderError("target project content differs from the declared digest")
+    return actual

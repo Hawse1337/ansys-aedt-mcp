@@ -18,18 +18,16 @@ import getpass
 import hashlib
 import json
 import os
-import shutil
 import sys
 import tempfile
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from approval_inbox import decide_request as decide_approval_request
 from approval_inbox import list_pending as list_pending_requests
 from approval_inbox import pending_dir as approval_pending_dir
 from approval_inbox import reconcile_requests as reconcile_approval_requests
-from approval_apply import merge_schema
+from approval_apply import apply_request, commit_entry, merge_schema, stage_script
 from approval_watch import ApprovalWatcher
 from auto_approval import auto_approve_pending
 from builder_schema import detect_candidate_schema, detect_suggestions
@@ -130,18 +128,6 @@ def sha256(path: Path) -> str:
 
 def load_allowlist(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def save_allowlist(path: Path, data: dict) -> None:
-    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    fd, tmp = tempfile.mkstemp(prefix="builders-", suffix=".json", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
 
 
 def check_builder(entry: dict) -> tuple[bool, str, str, str]:
@@ -523,35 +509,6 @@ class ApproverApp:
     def _canonical_candidate(self) -> str:
         candidate = self._candidate()
         return str(candidate.resolve()) if candidate is not None else ""
-
-    def _complete_matching_request(self, *, new_hash: str = "", note: str = "") -> None:
-        """Mark the active/matching request approved after a successful save."""
-        request = self._active_request
-        if request is None:
-            canonical = self._canonical_candidate()
-            for row in list_pending_requests():
-                if row.get("builder_id") != self.current_id:
-                    continue
-                row_candidate = str(Path(str(row.get("candidate") or "")).expanduser().resolve())
-                if row_candidate == canonical and (
-                    not new_hash or str(row.get("candidate_sha256") or "").lower() == new_hash
-                ):
-                    request = row
-                    break
-        if request is None:
-            return
-        try:
-            decide_approval_request(
-                str(request["request_id"]),
-                "approved",
-                decided_by=getpass.getuser(),
-                note=note or "approved via GUI",
-            )
-            self._log("[request] approved %s" % request["request_id"][:12])
-        except Exception as exc:  # noqa: BLE001
-            self._log("[request] failed to update status: %r" % (exc,))
-        self._active_request = None
-        self._refresh_pending_requests()
 
     def show_pending_requests(self) -> None:
         self._refresh_pending_requests()
@@ -994,19 +951,8 @@ class ApproverApp:
         entry = self._entry()
         if not entry:
             raise ValueError("未选择 builder")
-        if self.allowlist_path.is_file():
-            backup = self.allowlist_path.with_name(
-                self.allowlist_path.name
-                + ".bak-"
-                + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            )
-            shutil.copy2(self.allowlist_path, backup)
-        entry["params"] = params
-        self.data["builders"][self.current_id] = entry
-        save_allowlist(self.allowlist_path, self.data)
+        commit_entry(self.allowlist_path, self.current_id, entry, {**entry, "params": params})
         self._log("[schema] %s params updated via form (%d params)" % (self.current_id, len(params)))
-        if self._active_request and str(self._active_request.get("request_type")) == "schema_only":
-            self._complete_matching_request(note="parameter schema updated via GUI")
         messagebox.showinfo("已保存", "参数表已更新并写入 allowlist。")
         self.refresh()
 
@@ -1076,13 +1022,14 @@ class ApproverApp:
         schema_changes: list[str] = []
         try:
             merged_params, schema_changes, schema_errors = merge_schema(
-                entry, candidate, self.request_meta or self._active_request
+                entry, candidate, self._active_request or self.request_meta
             )
             if schema_errors:
                 messagebox.showerror("参数表无法自动补全", "\n".join(schema_errors))
                 return
-        except Exception as exc:  # noqa: BLE001 - detection is advisory only
-            self._log("[schema-detect] skipped: %r" % (exc,))
+        except Exception as exc:
+            messagebox.showerror("审批失败", str(exc))
+            return
         message = (
             "确认已完成人工 review，并批准新的 builder 版本？\n\n"
             "Builder: %s\n请求来源: %s\n请求时间: %s\n请求说明: %s\n当前 hash: %s\n候选 hash: %s\n参数数量: %d"
@@ -1101,43 +1048,31 @@ class ApproverApp:
         if not messagebox.askyesno("确认批准", message):
             return
         try:
-            self.approved_dir.mkdir(parents=True, exist_ok=True)
-            target = self.approved_dir / (self.current_id + ".py")
-            if self.allowlist_path.is_file():
-                backup = self.allowlist_path.with_name(
-                    self.allowlist_path.name
-                    + ".bak-"
-                    + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                )
-                shutil.copy2(self.allowlist_path, backup)
-            shutil.copy2(candidate, target)
-            digest = sha256(target)
-            approved_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            entry["script"] = str(target.resolve())
-            entry["sha256"] = digest
-            entry["params"] = merged_params
-            meta = dict(self.request_meta or {})
-            meta.update(
-                {
-                    "candidate": str(candidate),
-                    "candidate_sha256": new_hash,
-                    "requested_at": requested_at,
-                    "requested_source": source,
-                    "approved_at": approved_at,
-                    "approved_by": getpass.getuser(),
-                    "previous_sha256": old_hash,
-                    "approved_sha256": digest,
-                    "schema_added": schema_changes,
-                }
-            )
-            entry["approval"] = meta
-            self.data["builders"][self.current_id] = entry
-            save_allowlist(self.allowlist_path, self.data)
-            self._log(
-                "[apply] %s\n  请求来源: %s\n  请求时间: %s\n  approved: %s\n  sha256: %s"
-                % (self.current_id, source, requested_at, target.resolve(), digest)
-            )
-            self._complete_matching_request(new_hash=digest)
+            request = self._active_request or self.request_meta or {}
+            if request.get("request_id"):
+                if (request.get("builder_id") != self.current_id or
+                        Path(request.get("candidate", "")).resolve() != candidate.resolve() or
+                        request.get("candidate_sha256") != new_hash):
+                    raise ValueError("Displayed candidate differs from approval request; refresh the inbox")
+                result = apply_request(request, allowlist_path=self.allowlist_path,
+                                       approved_dir=self.approved_dir, decided_by=getpass.getuser(),
+                                       expected_entry=entry, expected_params=merged_params)
+                digest, approved_at = result["sha256"], result["approved_at"]
+                self._active_request = None
+            else:
+                target = stage_script(candidate, self.approved_dir, self.current_id, new_hash)
+                staged_params, _, errors = merge_schema(entry, target, request)
+                if errors or staged_params != merged_params:
+                    raise ValueError("候选参数表已变更，请重新检查")
+                digest = new_hash
+                approved_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                meta = {**request, "candidate": str(candidate), "candidate_sha256": digest,
+                        "requested_at": requested_at, "requested_source": source, "approved_at": approved_at,
+                        "approved_by": getpass.getuser(), "previous_sha256": old_hash,
+                        "approved_sha256": digest, "schema_added": schema_changes}
+                commit_entry(self.allowlist_path, self.current_id, entry, {**entry, "script": str(target.resolve()),
+                             "sha256": digest, "params": merged_params, "approval": meta})
+            self._log("[apply] %s · %s" % (self.current_id, digest))
             messagebox.showinfo(
                 "已批准",
                 "已更新 allowlist 和 approved 副本。\n\n请求来源: %s\n请求时间: %s\n批准时间: %s\nsha256: %s"

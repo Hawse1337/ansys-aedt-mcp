@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Astra audit fixes (2026-11-23).** Applied the external audit patch set: file-lock
+  serialization for approval/allowlist writes, content-addressed candidate snapshots and
+  approval pre-state checks, launcher ownership/close verification, and stricter approval
+  request content validation. Full offline guard suite: 517 passed, 1 skipped (regular
+  Windows long-path case; the extended-length variant passes separately). GUI selftest passes.
 - **Approved builders (autonomous modelling).** New `run_approved_builder` tool executes an
   operator-allowlisted builder script (SHA-256 verified at MCP and worker layers, typed parameter
   validation, output roots, unique project copy, managed session, attach-only wrapper, artifact

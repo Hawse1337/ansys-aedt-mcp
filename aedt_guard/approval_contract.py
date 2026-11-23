@@ -20,6 +20,7 @@ from typing import Any, Iterable
 from .approval_policy import PreflightFailure, preflight_candidate
 from .builders import load_allowlist
 from .managed import state_dir
+from guard_file_lock import inbox_transaction
 
 CONTRACT_VERSION = 2
 REQUEST_TYPES = {"builder_change", "schema_only"}
@@ -181,7 +182,12 @@ def _already_applied_record(
     return record, path
 
 
+@inbox_transaction(requests_root)
 def reconcile_requests() -> dict[str, list[str]]:
+    return _reconcile()
+
+
+def _reconcile() -> dict[str, list[str]]:
     """Retire stale requests without changing any allowlist or candidate.
 
     * A newer archived/approved request for the same builder supersedes an older
@@ -249,8 +255,8 @@ def reconcile_requests() -> dict[str, list[str]]:
             continue
         if (
             str(entry.get("sha256") or "").lower() == str(pending.get("candidate_sha256") or "").lower()
-            and not (pending.get("new_params") or [])
-            and not (pending.get("new_enum_values") or {})
+            and ((not pending.get("new_params") and not pending.get("new_enum_values"))
+                 or (entry.get("approval") or {}).get("request_id") == request_id)
         ):
             _archive(pending, "approved", decided_by="auto-reconcile",
                      decision_note="allowlist already matches candidate")
@@ -306,6 +312,7 @@ def _enforce_budget(builder_id: str, entry: dict[str, Any]) -> None:
         )
 
 
+@inbox_transaction(requests_root)
 def build_request(
     builder_id: str,
     candidate_path: str,
@@ -330,8 +337,8 @@ def build_request(
     candidate_sha = _sha256(candidate)
     preflight_request = {
         "tested": [str(item) for item in (tested or [])],
-        "new_params": [dict(item) for item in (new_params or []) if isinstance(item, dict)],
-        "new_enum_values": {str(k): list(v) for k, v in (new_enum_values or {}).items() if isinstance(v, list)},
+        "new_params": list(new_params or []),
+        "new_enum_values": dict(new_enum_values or {}),
     }
     try:
         preflight = preflight_candidate(candidate, entry=entry, request=preflight_request)
@@ -340,7 +347,7 @@ def build_request(
     # Retire applied/superseded requests before deciding whether a new one is
     # needed. This is what prevents an operator from having to approve a code
     # change that is already active.
-    reconcile_requests()
+    _reconcile()
     # Idempotency: repeated agent calls for the same pending candidate return
     # the existing request instead of flooding the operator inbox.
     for existing in list_requests():
@@ -352,13 +359,16 @@ def build_request(
             existing.get("builder_id") == builder_id
             and existing.get("request_type") == request_type
             and existing.get("candidate_sha256") == candidate_sha
+            and existing.get("old_approved_sha256") == str(entry["sha256"]).lower()
+            and (existing.get("new_params") or []) == preflight_request["new_params"]
+            and (existing.get("new_enum_values") or {}) == preflight_request["new_enum_values"]
             and same_candidate
         ):
             return existing, Path(str(existing["request_path"]))
     if (
         str(entry.get("sha256") or "").lower() == candidate_sha
-        and not (new_params or [])
-        and not (new_enum_values or {})
+        and not preflight_request["new_params"]
+        and not preflight_request["new_enum_values"]
     ):
         return _already_applied_record(builder_id, candidate, candidate_sha, entry)
     _enforce_budget(builder_id, entry)
@@ -379,13 +389,7 @@ def build_request(
         "requested_at": _now(),
         "reason": reason.strip(),
         "change_summary": [str(item) for item in (change_summary or [])],
-        "new_params": [dict(item) for item in (new_params or []) if isinstance(item, dict)],
-        "new_enum_values": {
-            str(name): list(values)
-            for name, values in (new_enum_values or {}).items()
-            if isinstance(values, list)
-        },
-        "tested": [str(item) for item in (tested or [])],
+        **preflight_request,
         "risk_notes": str(risk_notes or ""),
         "operator_action": "review_candidate_and_schema",
         "created_by": "aedt_guard",
@@ -436,6 +440,7 @@ def get_request(request_id: str) -> tuple[dict[str, Any], Path] | None:
     return None
 
 
+@inbox_transaction(requests_root)
 def decide_request(
     request_id: str,
     status: str,

@@ -18,18 +18,16 @@ import json
 import os
 import tempfile
 import time
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable
+
+from guard_file_lock import file_lock
 
 _TRUE = {"1", "true", "yes", "on"}
 _MAX_CREATE_TIME_DRIFT = 2.0
 REGISTRY_NAME = "managed_sessions.json"
 LOCK_NAME = "managed_sessions.lock"
-
-_WINDOWS = os.name == "nt"
-
 
 def state_dir() -> Path:
     override = os.environ.get("AEDT_MCP_STATE_DIR")
@@ -52,36 +50,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-@contextmanager
-def _locked() -> Iterator[None]:
-    """Cross-process lock for the registry read-modify-write."""
-    path = state_dir() / LOCK_NAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a+b")
-    try:
-        if _WINDOWS:
-            import msvcrt
-
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        yield
-    finally:
-        try:
-            if _WINDOWS:
-                import msvcrt
-
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            handle.close()
+def _locked():
+    """Serialize registry read-modify-write operations across guard processes."""
+    return file_lock(state_dir() / LOCK_NAME)
 
 
 def _read() -> list[dict[str, Any]]:

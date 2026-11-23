@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import difflib
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -110,17 +111,17 @@ def low_risk(request: dict[str, Any], entry: dict[str, Any]) -> tuple[bool, list
     if not candidate.is_file():
         return False, ["candidate file missing"]
     expected = str(request.get("candidate_sha256") or "").lower()
-    if expected:
-        import hashlib
-
-        actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
-        if actual != expected:
-            return False, ["candidate changed after request"]
-    source = candidate.read_text(encoding="utf-8", errors="replace")
+    content = candidate.read_bytes()
+    if hashlib.sha256(content).hexdigest() != expected:
+        return False, ["candidate changed after request"]
+    source = content.decode("utf-8-sig", errors="replace")
     current_path = Path(str(entry.get("script") or ""))
     if not current_path.is_file():
         return False, ["approved script missing"]
-    current = current_path.read_text(encoding="utf-8", errors="replace")
+    current_content = current_path.read_bytes()
+    if hashlib.sha256(current_content).hexdigest() != str(entry.get("sha256") or "").lower():
+        return False, ["approved script differs from the allowlist"]
+    current = current_content.decode("utf-8-sig", errors="replace")
     try:
         compile(source, str(candidate), "exec")
     except SyntaxError as exc:
@@ -186,6 +187,7 @@ def auto_approve_pending(
                 decided_by=decided_by,
                 note="auto-approved low risk",
                 auto_approved=True,
+                expected_entry=entry,
             )
         except ApprovalApplyError as exc:
             skipped.append({
