@@ -328,11 +328,18 @@ export_report_image(
 )
 ```
 
-It opens the solved project, creates the requested native reports
-(3D Polar Plot / E-plane Radiation Pattern / H-plane Radiation Pattern), exports
-JPGs, and removes the reports again. The E/H reports use the dB-radial
-`Radiation Pattern` style; `Polar Plot` would use a linear dBi radius and look
-like a nearly straight line. It never rebuilds, solves, saves, or changes geometry. Because it
+It opens the solved project, creates the requested native reports and removes
+them again before returning:
+
+- 3D: `3D Polar Plot`;
+- E-plane: dB-radial `Radiation Pattern`;
+- H-plane: native `Rectangular Plot` (X = Phi 0..360, Y = dB(GainTotal)).
+
+The H-plane is deliberately rectangular: a nearly omnidirectional H cut only
+varies by ~0.5 dB, so AEDT's automatic Radiation Pattern radius can choose a
+linear dBi axis and wrap Phi past 360 degrees, producing a star-shaped artifact.
+`Polar Plot` for E/H is also avoided because its default linear-dBi radius makes
+a normal pattern look like a straight line. It never rebuilds, solves, saves, or changes geometry. Because it
 is a fixed tool rather than a builder parameter, changing frequency, image size,
 or plot selection does **not** require a new allowlist approval.
 

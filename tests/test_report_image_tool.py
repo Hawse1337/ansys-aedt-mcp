@@ -55,7 +55,7 @@ def test_export_report_image_creates_three_native_reports(tmp_path: Path):
     assert all(row["exists"] for row in result["files"].values())
     assert result["errors"] == []
     assert [call["plot_type"] for call in post.created] == [
-        "3D Polar Plot", "Radiation Pattern", "Radiation Pattern"
+        "3D Polar Plot", "Radiation Pattern", "Rectangular Plot"
     ]
     assert sorted(post.deleted) == ["P3D_12", "PE_12", "PH_12"]
 

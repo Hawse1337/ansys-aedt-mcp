@@ -1294,8 +1294,13 @@ class PyAedtBackend:
                 "Theta",
             )
         if "h" in plots:
+            # A Radiation Pattern for an omni H-cut has only ~0.5 dB of radial
+            # variation; AEDT then chooses a linear-dBi radius and more than
+            # 360 degrees of Phi wraps, producing a star artefact.  The native
+            # rectangular Far-Fields report is the correct presentation here:
+            # X = Phi 0..360, Y = dB(GainTotal).
             _make(
-                "PH_%s" % tag, "Radiation Pattern",
+                "PH_%s" % tag, "Rectangular Plot",
                 {"Freq": [frequency], "Theta": ["90deg"], "Phi": ["All"]},
                 "Phi",
             )
