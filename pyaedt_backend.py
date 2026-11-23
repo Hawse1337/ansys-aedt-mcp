@@ -1285,14 +1285,17 @@ class PyAedtBackend:
                 "Phi", "Theta",
             )
         if "e" in plots:
+            # ``Polar Plot`` uses a linear dBi radius and looks like a straight
+            # line for a typical pattern.  AEDT's ``Radiation Pattern`` is the
+            # native dB-radial plot that the GUI's Copy Image produces.
             _make(
-                "PE_%s" % tag, "Polar Plot",
+                "PE_%s" % tag, "Radiation Pattern",
                 {"Freq": [frequency], "Phi": ["0deg"], "Theta": ["All"]},
                 "Theta",
             )
         if "h" in plots:
             _make(
-                "PH_%s" % tag, "Polar Plot",
+                "PH_%s" % tag, "Radiation Pattern",
                 {"Freq": [frequency], "Theta": ["90deg"], "Phi": ["All"]},
                 "Phi",
             )

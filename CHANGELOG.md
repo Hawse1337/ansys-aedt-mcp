@@ -29,7 +29,8 @@
   enforcement.
 - **Native report-image export (2026-11-23).** New fixed read-only
   `export_report_image` MCP tool exports AEDT-native 3D Polar / E-plane / H-plane JPGs from
-  solved data for any frequency, plot selection and image size. It never rebuilds, solves, saves
+  solved data for any frequency, plot selection and image size. E/H use the dB-radial
+  `Radiation Pattern` style (not a linear `Polar Plot`). It never rebuilds, solves, saves
   or changes geometry, and it does **not** require a builder/allowlist approval. Tool surface 66,
   tests 505.
 - **Launcher orphan recovery (2026-11-23).** A timed-out AEDT launch used to discard the

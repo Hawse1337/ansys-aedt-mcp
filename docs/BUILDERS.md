@@ -329,8 +329,10 @@ export_report_image(
 ```
 
 It opens the solved project, creates the requested native reports
-(3D Polar Plot / E-plane Polar / H-plane Polar), exports JPGs, and removes the
-reports again. It never rebuilds, solves, saves, or changes geometry. Because it
+(3D Polar Plot / E-plane Radiation Pattern / H-plane Radiation Pattern), exports
+JPGs, and removes the reports again. The E/H reports use the dB-radial
+`Radiation Pattern` style; `Polar Plot` would use a linear dBi radius and look
+like a nearly straight line. It never rebuilds, solves, saves, or changes geometry. Because it
 is a fixed tool rather than a builder parameter, changing frequency, image size,
 or plot selection does **not** require a new allowlist approval.
 
