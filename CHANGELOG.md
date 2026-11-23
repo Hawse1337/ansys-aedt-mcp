@@ -27,7 +27,11 @@
   `submit_guarded_run` also records `builder_id="guarded_run"` provenance, so manual runs that
   bypass the approved builder remain visible. This is visibility/evidence, not yet task-mode
   enforcement.
-- **Approval flow v1.4 (2026-11-23).** One active request per builder: new requests supersede old
+- **Launcher orphan recovery (2026-11-23).** A timed-out AEDT launch used to discard the
+  guard-spawned managed record while keeping the live process tracked, so managed-only policy
+  could neither attach nor relaunch; the operator had to close the window by hand. The launcher now
+  keeps the spawn record on handshake failure, adopts it on retry when its gRPC port is ready, and
+  otherwise auto-releases the orphan before launching a fresh session.\n- **Approval flow v1.4 (2026-11-23).** One active request per builder: new requests supersede old
   pending ones (tombstone + `superseded_by`), already-applied candidates are archived without
   asking again, and the GUI reconciles stale ids. Approval now updates script hash **and** the
   merged parameter schema atomically (manual and automatic paths share it). A GUI checkbox enables

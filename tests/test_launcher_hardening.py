@@ -53,12 +53,17 @@ class LauncherRegressionTests(unittest.TestCase):
         self.process.terminate.assert_not_called()
         self.process.kill.assert_not_called()
 
-    def test_repeated_call_after_timeout_does_not_spawn_another_process(self):
+    def test_repeated_call_after_timeout_releases_the_orphan_and_retries(self):
         launcher = self.launcher()
-        for message in ('timed out', 'still running'):
-            with self.assertRaisesRegex(AedtLaunchError, message):
-                launcher.launch(install_dir=self.install, timeout=1)
-        self.factory.assert_called_once()
+        with self.assertRaisesRegex(AedtLaunchError, 'timed out'):
+            launcher.launch(install_dir=self.install, timeout=1)
+        # No adoptable port: the guard-spawned orphan is auto-released and a
+        # clean process is started instead of deadlocking until a human closes
+        # the AEDT window.
+        with self.assertRaisesRegex(AedtLaunchError, 'timed out'):
+            launcher.launch(install_dir=self.install, timeout=1)
+        self.assertEqual(self.factory.call_count, 2)
+        self.process.terminate.assert_called()
 
     def test_one_handshake_receives_remaining_budget_not_five_second_probes(self):
         result = self.launcher(port_is_open=lambda port: True).launch(install_dir=self.install, timeout=240)
@@ -67,7 +72,7 @@ class LauncherRegressionTests(unittest.TestCase):
         self.assertEqual(self.worker.execute.call_args.args[0].key, 'pid:12345')
         self.assertEqual(result['pid'], 12345)
 
-    def test_handshake_error_does_not_retry_or_terminate(self):
+    def test_handshake_error_does_not_kill_during_the_same_launch(self):
         self.worker.execute.side_effect = TimeoutError('connection pending')
         launcher = self.launcher(port_is_open=lambda port: True)
         with self.assertRaisesRegex(AedtLaunchError, 'no retry or termination'):
@@ -75,9 +80,25 @@ class LauncherRegressionTests(unittest.TestCase):
         self.worker.execute.assert_called_once()
         self.worker.release.assert_not_called()
         self.process.terminate.assert_not_called()
-        with self.assertRaisesRegex(AedtLaunchError, 'still running'):
+        # A later retry may try to adopt first; when that also fails it releases
+        # the guard-spawned orphan automatically and starts a clean process.
+        with self.assertRaisesRegex(AedtLaunchError, 'no retry or termination'):
             launcher.launch(install_dir=self.install, timeout=240)
-        self.factory.assert_called_once()
+        self.assertEqual(self.factory.call_count, 2)
+        self.process.terminate.assert_called()
+
+    def test_retry_adopts_a_ready_guard_spawned_session(self):
+        launcher = self.launcher()
+        with self.assertRaisesRegex(AedtLaunchError, 'timed out'):
+            launcher.launch(install_dir=self.install, timeout=1)
+        before = self.factory.call_count
+        ready = self.launcher(port_is_open=lambda port: True)
+        ready._unfinished_launch = launcher._unfinished_launch
+        result = ready.launch(install_dir=self.install, timeout=30)
+        self.assertEqual(result['pid'], 12345)
+        self.assertEqual(result['recovered'], True)
+        self.assertEqual(self.factory.call_count, before)
+        self.process.terminate.assert_not_called()
 
     def test_identity_version_or_connection_mismatch_never_returns_success(self):
         invalid = [None, {}, {'connected':False, 'pid':12345, 'port':50051, 'aedt_version':'2026.1'},

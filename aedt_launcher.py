@@ -137,7 +137,7 @@ class AedtLauncher:
         self._monotonic = monotonic
         self._sleep = sleep
         self._launch_lock = threading.Lock()
-        self._unfinished_launch: tuple[Any, int] | None = None
+        self._unfinished_launch: tuple[Any, int, str, bool] | None = None
 
     def launch(
         self,
@@ -152,25 +152,117 @@ class AedtLauncher:
         if not self._launch_lock.acquire(blocking=False):
             raise AedtLaunchError("an AEDT launch is already in progress; do not retry concurrently")
         try:
+            unfinished = self._unfinished_launch
+            if unfinished is not None and unfinished[0].poll() is None:
+                adopted = self._adopt_unfinished(timeout=timeout)
+                if adopted is not None:
+                    return adopted
+                # A failed handshake left a guard-spawned AEDT that cannot be
+                # adopted.  Release it automatically instead of asking the
+                # operator to close the window by hand, then launch a clean one.
+                self._release_unfinished("readiness handshake failed and adoption failed")
             return self._launch_once(version=version, port=port, install_dir=install_dir,
                                      non_graphical=non_graphical, timeout=timeout)
         except Exception:
             unfinished = self._unfinished_launch
             if unfinished is not None:
                 process = unfinished[0]
-                try:
-                    from aedt_guard.managed import discard_launch
-
-                    discard_launch(int(process.pid))
-                except Exception:  # noqa: BLE001 - cleanup must not hide the launch error
-                    pass
-                # Keep the live process tracked so a retry cannot spawn a duplicate AEDT;
-                # release the slot only when the failed process has actually exited.
+                # Keep the spawn-time managed record while the process is alive.
+                # This is what lets a subsequent PID attach pass managed-only
+                # enforcement instead of deadlocking between "can't attach" and
+                # "can't launch".
                 if process.poll() is not None:
+                    try:
+                        from aedt_guard.managed import discard_launch
+
+                        discard_launch(int(process.pid))
+                    except Exception:  # noqa: BLE001 - cleanup must not hide the launch error
+                        pass
                     self._unfinished_launch = None
             raise
         finally:
             self._launch_lock.release()
+
+    def _adopt_unfinished(self, *, timeout: float | None = None) -> dict[str, Any] | None:
+        """Adopt a guard-spawned AEDT whose launch handshake timed out.
+
+        The process was recorded as managed at spawn time.  If its gRPC port is
+        now ready, verify identity and return it as a normal launch instead of
+        leaving the caller with "can't attach, can't launch".
+        """
+        unfinished = self._unfinished_launch
+        if unfinished is None:
+            return None
+        process, port, version, non_graphical = unfinished
+        if process.poll() is not None:
+            self._unfinished_launch = None
+            return None
+        if not self._port_is_open(port):
+            return None
+        remaining = 60.0 if timeout is None else min(max(5.0, float(timeout)), 120.0)
+        try:
+            info = self._worker_client.execute(
+                AedtTarget("pid", int(process.pid)), "ping", {}, timeout=remaining
+            )
+            if not isinstance(info, dict) or info.get("connected") is not True:
+                return None
+            if str(info.get("aedt_version")) != version:
+                return None
+            if type(info.get("pid")) is not int or info["pid"] != process.pid:
+                return None
+            if type(info.get("port")) is not int or info["port"] != port:
+                return None
+        except Exception:  # noqa: BLE001 - adoption is best effort
+            return None
+        self._unfinished_launch = None
+        try:
+            from aedt_guard.managed import mark_verified, record_launch
+
+            record_launch(pid=int(process.pid), port=port, version=version,
+                          non_graphical=non_graphical, source="aedt_launcher.adopted")
+            mark_verified(pid=int(process.pid))
+        except Exception:  # noqa: BLE001 - bookkeeping must not hide a live session
+            pass
+        result: dict[str, Any] = {
+            "pid": int(process.pid),
+            "port": port,
+            "version": version,
+            "connection_mode": "grpc",
+            "recovered": True,
+            "recovery": "adopted after launch handshake timeout",
+        }
+        if non_graphical:
+            result["non_graphical"] = True
+        return result
+
+    def _release_unfinished(self, reason: str) -> bool:
+        """Terminate the guard-spawned process that could not be adopted."""
+        unfinished = self._unfinished_launch
+        if unfinished is None:
+            return False
+        process, _port, _version, _non_graphical = unfinished
+        released = False
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except Exception:  # noqa: BLE001
+                    try:
+                        process.kill()
+                    except Exception:  # noqa: BLE001
+                        pass
+            released = True
+        except Exception:  # noqa: BLE001 - cleanup is best effort
+            released = False
+        try:
+            from aedt_guard.managed import discard_launch
+
+            discard_launch(int(process.pid))
+        except Exception:  # noqa: BLE001
+            pass
+        self._unfinished_launch = None
+        return released
 
     def _launch_once(
         self, *, version: str, port: int, install_dir: str | Path | None,
@@ -182,7 +274,7 @@ class AedtLauncher:
         if type(non_graphical) is not bool:
             raise AedtLaunchError("non_graphical must be a boolean")
         if self._unfinished_launch is not None:
-            previous, previous_port = self._unfinished_launch
+            previous, previous_port, _previous_version, _previous_ng = self._unfinished_launch
             if previous.poll() is None:
                 raise AedtLaunchError(
                     f"previous AEDT launch PID {previous.pid}, port {previous_port} is still running; "
@@ -215,7 +307,7 @@ class AedtLauncher:
             command.append("-ng")
         deadline = self._monotonic() + effective_timeout
         process = self._process_factory(command, cwd=str(executable.parent))
-        self._unfinished_launch = (process, selected_port)
+        self._unfinished_launch = (process, selected_port, version, non_graphical)
         # Record ownership before the readiness handshake: the broker's managed-session
         # enforcement must see this PID as guard-launched, or its own probe is refused.
         try:
