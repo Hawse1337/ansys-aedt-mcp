@@ -247,6 +247,9 @@ def apply_request(
             "output_roots": list(output_roots),
             "approval": {
                 **dict(request),
+                "status": "approved",
+                "decided_at": _now(),
+                "decided_by": str(decided_by or ""),
                 "candidate": str(candidate),
                 "candidate_sha256": expected_candidate,
                 "approved_sha256": digest,
@@ -307,6 +310,9 @@ def apply_request(
     meta = dict(request)
     meta.update(
         {
+            "status": "approved",
+            "decided_at": _now(),
+            "decided_by": str(decided_by or ""),
             "candidate": str(candidate),
             "candidate_sha256": expected_candidate,
             "approved_sha256": digest,

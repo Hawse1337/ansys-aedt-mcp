@@ -112,6 +112,7 @@ def test_new_builder_registration_request_and_apply(tmp_path: Path, monkeypatch)
     assert entry["output_roots"] == [str(output.resolve())]
     assert entry["params"]["variant"]["type"] == "enum"
     assert entry["approval"]["request_id"] == record["request_id"]
+    assert entry["approval"]["status"] == "approved"
 
 
 def test_existing_builder_cannot_use_new_builder_type(tmp_path: Path, monkeypatch):
