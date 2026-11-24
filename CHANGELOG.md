@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.6.0 - 2026-11-25
+
 - **Astra audit fixes (2026-11-23).** Applied the external audit patch set: file-lock
   serialization for approval/allowlist writes, content-addressed candidate snapshots and
   approval pre-state checks, launcher ownership/close verification, and stricter approval

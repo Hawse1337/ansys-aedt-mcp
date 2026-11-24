@@ -134,7 +134,7 @@ approval churn. See [docs/APPROVAL_POLICY.md](docs/APPROVAL_POLICY.md).
 - Releases and the hardened package are published at:
   https://github.com/Hawse1337/pyaedt-mcp-hardening-kit/releases
 
-## Enforcement boundary (v0.3.2)
+## Enforcement boundary (v1.6.0)
 
 Guard-launched AEDT sessions are recorded and only those sessions can be attached through
 the guard. `guard_status` lists every live `ansysedt.exe` as managed or unmanaged, and every

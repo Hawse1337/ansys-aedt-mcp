@@ -20,7 +20,7 @@ security boundary it is not.
   process can start `ansysedt.exe`, import PyAEDT and drive AEDT directly. No Python-level guard can
   prevent that; only OS isolation can.
 
-## Controls (v0.3.2)
+## Controls (v1.6.0)
 
 | control | behaviour |
 |---|---|

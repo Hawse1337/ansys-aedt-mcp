@@ -1,6 +1,6 @@
 [project]
 name = "ansys-aedt-mcp"
-version = "0.3.2"
+version = "1.6.0"
 description = "PyAEDT-backed MCP server for Ansys Electronics Desktop"
 requires-python = ">=3.10"
 dependencies = [
