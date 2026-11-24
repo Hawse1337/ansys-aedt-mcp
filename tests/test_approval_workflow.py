@@ -80,6 +80,34 @@ def test_new_request_supersedes_old_pending(tmp_path: Path, monkeypatch):
         raise AssertionError("a superseded request must not be decidable")
 
 
+def test_repeated_requests_report_churn_warning(tmp_path: Path, monkeypatch):
+    current = _candidate(tmp_path, "builder.py", "def run(design=None):\n    return design\n")
+    _allowlist(tmp_path, current, monkeypatch)
+    record = None
+    for index in range(3):
+        candidate = _candidate(
+            tmp_path, "attempt%d.py" % index,
+            "def run(design=None):\n    # attempt %d\n    return design\n" % index,
+        )
+        record, _ = contract.build_request("demo", str(candidate), "iteration %d" % index)
+    assert record["approval_churn"]["requests_24h"] >= 3
+    assert record["approval_churn"]["level"] == "warning"
+    assert "Consolidate" in record["approval_churn"]["message"]
+
+
+def test_approval_churn_limit_blocks_incremental_requests(tmp_path: Path, monkeypatch):
+    current = _candidate(tmp_path, "builder.py", "def run(design=None):\n    return design\n")
+    allowlist = _allowlist(tmp_path, current, monkeypatch)
+    data = json.loads(allowlist.read_text(encoding="utf-8"))
+    data["builders"]["demo"]["approval_churn_limit"] = 1
+    allowlist.write_text(json.dumps(data), encoding="utf-8")
+    first = _candidate(tmp_path, "one.py", "def run(design=None):\n    # one\n    return design\n")
+    second = _candidate(tmp_path, "two.py", "def run(design=None):\n    # two\n    return design\n")
+    contract.build_request("demo", str(first), "first")
+    with pytest.raises(contract.ApprovalRequestError, match="churn limit"):
+        contract.build_request("demo", str(second), "second")
+
+
 def test_already_applied_candidate_is_not_a_new_pending_request(tmp_path: Path, monkeypatch):
     current = _candidate(tmp_path, "builder.py", "def run(design=None):\n    return design\n")
     _allowlist(tmp_path, current, monkeypatch)

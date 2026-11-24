@@ -7,6 +7,10 @@
   approval pre-state checks, launcher ownership/close verification, and stricter approval
   request content validation. Full offline guard suite: 517 passed, 1 skipped (regular
   Windows long-path case; the extended-length variant passes separately). GUI selftest passes.
+- **Approval churn controls.** `request_builder_approval` now reports
+  `approval_churn` (requests/24h, warning level, message). Optional
+  `approval_churn_warn_after`/`approval_churn_limit` builder settings stop incremental
+  production-builder debug loops; `docs/EXPERIMENTAL_BUILDERS.md` documents the dev-builder lane.
 - **Measurement sampling / approval UX.** Documented that a true 5° native pattern needs the
   builder's far-field sampling parameter approved once; changing its value afterwards is a normal
   parameter run, not another approval. Approval schema merging now preserves explicit

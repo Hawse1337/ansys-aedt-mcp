@@ -131,7 +131,45 @@ Agents should consolidate measurement parameters into one schema request and the
 reuse the approved builder for value changes. They must not create a new
 candidate script for every sampling value.
 
-## 8. Operator-visible rule
+## 8. Approval churn: stop using production builder as a dev branch
+
+`request_builder_approval` now returns an `approval_churn` object:
+
+```json
+{
+  "requests_24h": 4,
+  "warn_after": 3,
+  "limit": null,
+  "level": "warning",
+  "message": "p0_model has 4 approval request(s) in the last 24h ..."
+}
+```
+
+Optional builder settings (operator-owned, in `builders.local.json`):
+
+```json
+"p0_model": {
+  "approval_churn_warn_after": 3,
+  "approval_churn_limit": 5
+}
+```
+
+- `approval_churn_warn_after` is a soft warning (default 3);
+- `approval_churn_limit` is a hard cap per 24h; the next request is refused;
+- this is separate from `approval_budget_per_day` and is intended to stop
+  incremental fix → approve → fix → approve loops.
+
+Recommended rule for a feature under active development:
+
+1. first failed solve: one corrective request;
+2. second failure: stop changing the production builder;
+3. move the experiment to a `*_dev` builder or a parameterized branch;
+4. freeze a candidate and request **one** production promotion.
+
+The dev builder must still be operator-approved and tagged `experimental`; it
+must not be used for delivery evidence until promoted.
+
+## 9. Operator-visible rule
 
 The GUI shows pending requests, source, preflight risk and campaign gate. The
 operator should not have to:

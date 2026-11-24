@@ -306,20 +306,70 @@ def recent_request_count(builder_id: str, *, hours: float = 24.0) -> int:
     return count
 
 
+def approval_churn(builder_id: str, entry: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Describe recent approval traffic for one builder.
+
+    This is informational by default. An operator can set
+    ``approval_churn_limit`` (hard cap) and/or ``approval_churn_warn_after``
+    (default 3) in the builder entry when a production builder is being used as
+    a development branch.
+    """
+    entry = entry or {}
+    used = recent_request_count(builder_id)
+    try:
+        warn_after = int(entry.get("approval_churn_warn_after") or 3)
+    except (TypeError, ValueError):
+        warn_after = 3
+    try:
+        limit = int(entry.get("approval_churn_limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    level = "ok"
+    if used >= warn_after:
+        level = "warning"
+    if limit > 0 and used >= limit:
+        level = "blocked"
+    message = ""
+    if level != "ok":
+        message = (
+            "%s has %d approval request(s) in the last 24h; this looks like "
+            "incremental builder debugging. Consolidate the remaining fixes or "
+            "move the experiment to a dev builder before requesting again."
+            % (builder_id, used)
+        )
+    return {
+        "builder_id": builder_id,
+        "requests_24h": used,
+        "warn_after": warn_after,
+        "limit": limit or None,
+        "level": level,
+        "message": message,
+    }
+
+
 def _enforce_budget(builder_id: str, entry: dict[str, Any]) -> None:
     try:
         budget = int(entry.get("approval_budget_per_day") or 0)
     except (TypeError, ValueError):
         budget = 0
-    if budget <= 0:
-        return
     used = recent_request_count(builder_id)
-    if used >= budget:
+    if budget > 0 and used >= budget:
         raise ApprovalRequestError(
             "approval budget exceeded for %s: %d requests in the last 24h (limit %d); "
             "consolidate the candidate and include all required parameters/test evidence "
             "in one request instead of submitting incremental fixes"
             % (builder_id, used, budget)
+        )
+    try:
+        churn_limit = int(entry.get("approval_churn_limit") or 0)
+    except (TypeError, ValueError):
+        churn_limit = 0
+    if churn_limit > 0 and used >= churn_limit:
+        raise ApprovalRequestError(
+            "approval churn limit reached for %s: %d requests in the last 24h "
+            "(approval_churn_limit=%d). Consolidate the fix or use a dev builder; "
+            "do not submit another incremental production-builder change."
+            % (builder_id, used, churn_limit)
         )
 
 
@@ -383,6 +433,17 @@ def build_request(
     ):
         return _already_applied_record(builder_id, candidate, candidate_sha, entry)
     _enforce_budget(builder_id, entry)
+    churn = approval_churn(builder_id, entry)
+    # Include the request being created in the operator-facing count.
+    churn["requests_24h"] = int(churn["requests_24h"]) + 1
+    if churn["requests_24h"] >= int(churn["warn_after"]) and churn["level"] == "ok":
+        churn["level"] = "warning"
+        churn["message"] = (
+            "%s has %d approval request(s) in the last 24h; this looks like "
+            "incremental builder debugging. Consolidate the remaining fixes or "
+            "move the experiment to a dev builder before requesting again."
+            % (builder_id, churn["requests_24h"])
+        )
     request_id = uuid.uuid4().hex
     superseded = _supersede_pending(builder_id, request_id)
     record: dict[str, Any] = {
@@ -405,6 +466,7 @@ def build_request(
         "operator_action": "review_candidate_and_schema",
         "created_by": "aedt_guard",
         "superseded_requests": superseded,
+        "approval_churn": churn,
         "preflight": preflight,
     }
     path = pending_dir() / (request_id + ".json")
