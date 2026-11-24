@@ -7,6 +7,11 @@
   approval pre-state checks, launcher ownership/close verification, and stricter approval
   request content validation. Full offline guard suite: 517 passed, 1 skipped (regular
   Windows long-path case; the extended-length variant passes separately). GUI selftest passes.
+- **GUI pending-inbox freshness (v1.7).** The pending-request dialog now refreshes itself and
+  re-renders on watcher notifications; loaded requests that were approved/superseded elsewhere are
+  cleared; stale approvals show a refresh message instead of a raw "request is no longer pending"
+  error. The recurring refresh timer is now single-scheduled instead of multiplying on every manual
+  refresh.
 - **Approval churn controls.** `request_builder_approval` now reports
   `approval_churn` (requests/24h, warning level, message). Optional
   `approval_churn_warn_after`/`approval_churn_limit` builder settings stop incremental

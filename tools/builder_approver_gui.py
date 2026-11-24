@@ -208,6 +208,9 @@ class ApproverApp:
         self._watch_candidate = ""
         self.pending_requests: list[dict] = []
         self._active_request: dict | None = None
+        self._pending_refresh_after = None
+        self._pending_dialog = None
+        self._pending_refresh_cb = None
         self.optimization_rows: list[dict] = []
         self.watcher: ApprovalWatcher | None = None
 
@@ -481,6 +484,10 @@ class ApproverApp:
         def update_ui() -> None:
             self._log("[notify] %s%s" % (title, "" if ok else "（toast 不可用，使用提示音）"))
             try:
+                self._refresh_pending_requests()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
                 self.root.bell()
             except Exception:  # noqa: BLE001
                 pass
@@ -500,11 +507,31 @@ class ApproverApp:
             self.pending_requests = list_pending_requests()
         except Exception:  # noqa: BLE001
             self.pending_requests = []
+        # A request loaded in the editor may have been approved/superseded by
+        # another process (including another GUI window). Never keep approving
+        # a stale row; the next click must select a still-pending request.
+        if self._active_request is not None:
+            active_id = str(self._active_request.get("request_id") or "")
+            if not any(str(row.get("request_id") or "") == active_id for row in self.pending_requests):
+                self._active_request = None
+                self._log("[request] active request is no longer pending; cleared")
         try:
             self.pending_button.configure(text="待审批请求 (%d)" % len(self.pending_requests))
-            self.root.after(4000, self._refresh_pending_requests)
+            if self._pending_refresh_cb is not None:
+                try:
+                    self._pending_refresh_cb()
+                except tk.TclError:
+                    self._pending_refresh_cb = None
+            if self._pending_refresh_after is None:
+                self._pending_refresh_after = self.root.after(
+                    4000, self._scheduled_pending_refresh
+                )
         except tk.TclError:
             pass
+
+    def _scheduled_pending_refresh(self) -> None:
+        self._pending_refresh_after = None
+        self._refresh_pending_requests()
 
     def _canonical_candidate(self) -> str:
         candidate = self._candidate()
@@ -539,9 +566,11 @@ class ApproverApp:
             tree.column(key, width=width, anchor="w", stretch=key in {"candidate", "reason"})
         tree.pack(fill="both", expand=True, padx=10)
 
-        def refresh() -> None:
+        def redraw() -> None:
+            if not dialog.winfo_exists():
+                return
+            selected = set(tree.selection())
             tree.delete(*tree.get_children())
-            self._refresh_pending_requests()
             for row in self.pending_requests:
                 source = " / ".join(
                     part for part in (
@@ -549,10 +578,11 @@ class ApproverApp:
                         str(row.get("session_title") or ""),
                     ) if part
                 )
+                iid = str(row.get("request_id"))
                 tree.insert(
                     "",
                     "end",
-                    iid=str(row.get("request_id")),
+                    iid=iid,
                     values=(
                         str(row.get("requested_at") or ""),
                         str(row.get("builder_id") or ""),
@@ -562,6 +592,20 @@ class ApproverApp:
                         source,
                     ),
                 )
+                if iid in selected:
+                    tree.selection_add(iid)
+
+        def refresh() -> None:
+            self._refresh_pending_requests()
+            redraw()
+
+        def close_dialog() -> None:
+            self._pending_refresh_cb = None
+            self._pending_dialog = None
+            dialog.destroy()
+
+        self._pending_dialog = dialog
+        self._pending_refresh_cb = redraw
         refresh()
 
         def load_selected() -> None:
@@ -586,7 +630,7 @@ class ApproverApp:
                 "[request] loaded %s (%s, %s)"
                 % (request_id[:12], builder, candidate)
             )
-            dialog.destroy()
+            close_dialog()
             if str(request.get("request_type")) == "schema_only":
                 self.root.after(100, self.edit_schema)
 
@@ -594,8 +638,9 @@ class ApproverApp:
         buttons.pack(fill="x")
         ttk.Button(buttons, text="载入选中请求", command=load_selected, style="Accent.TButton").pack(side="left")
         ttk.Button(buttons, text="刷新", command=refresh).pack(side="left", padx=6)
-        ttk.Button(buttons, text="关闭", command=dialog.destroy).pack(side="right")
+        ttk.Button(buttons, text="关闭", command=close_dialog).pack(side="right")
         tree.bind("<Double-1>", lambda _event: load_selected())
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
 
     # ---- optimisation provenance ------------------------------------
     def _tick_optimization(self) -> None:
@@ -707,6 +752,12 @@ class ApproverApp:
     def _on_close(self) -> None:
         if self.watcher is not None:
             self.watcher.stop()
+        if self._pending_refresh_after is not None:
+            try:
+                self.root.after_cancel(self._pending_refresh_after)
+            except tk.TclError:
+                pass
+            self._pending_refresh_after = None
         self.root.destroy()
 
     # ---- chrome ------------------------------------------------------
@@ -1078,10 +1129,25 @@ class ApproverApp:
                 "已更新 allowlist 和 approved 副本。\n\n请求来源: %s\n请求时间: %s\n批准时间: %s\nsha256: %s"
                 % (source, requested_at, approved_at, digest),
             )
+            self._refresh_pending_requests()
             self.refresh()
         except Exception as exc:  # noqa: BLE001
             self._log("apply 失败: %r" % (exc,))
-            messagebox.showerror("批准失败", str(exc))
+            text = str(exc)
+            self._refresh_pending_requests()
+            if ("no longer pending" in text.lower()
+                    or "pending request has changed" in text.lower()
+                    or "already approved" in text.lower()
+                    or "already superseded" in text.lower()):
+                self._active_request = None
+                self.refresh()
+                messagebox.showinfo(
+                    "请求已失效",
+                    "该请求已不在待审批列表里：可能已被批准、被新请求替代，"
+                    "或由另一个窗口处理。\n\n待审批列表已刷新，请重新打开并选择最新请求。",
+                )
+            else:
+                messagebox.showerror("批准失败", text)
 
 
 def self_test(allowlist: Path) -> int:
