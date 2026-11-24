@@ -256,6 +256,8 @@ Resources `aedt://status` and `aedt://agent-instructions` never attach implicitl
   `min`/`max`/`default`/`required` declarations win over inferred schema.
 - `approval_budget_per_day` is an optional hard cap. `approval_churn` warns on repeated incremental
   requests; `approval_churn_limit` is an optional hard cap (see `docs/APPROVAL_POLICY.md`).
+- First registration of a brand-new builder uses `request_type="new_builder"`, complete `new_params`,
+  absolute `output_roots` and optional `targets`; the operator GUI creates the entry after review.
 - `ff_step_deg` (or an equivalent native-sampling parameter) must be approved once; changing its
   value afterwards is a normal builder run, not a new approval.
 
@@ -290,5 +292,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\remove_legacy
 ```
 
 Live acceptance covers explicit PID and port targeting, repeated commands on one broker, disposable HFSS project save, and normal AEDT close while the broker is still connected. It fails if the "being used by another application, script or extension wizard" dialog appears.
+
 
 

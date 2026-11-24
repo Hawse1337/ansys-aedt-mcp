@@ -219,6 +219,71 @@ def apply_request(
         raise ApprovalApplyError("candidate changed after the request was created")
     data = load_allowlist(allowlist_path)
     entry = data["builders"].get(builder_id)
+    if str(request.get("request_type") or "") == "new_builder":
+        if isinstance(entry, dict):
+            raise ApprovalApplyError("builder %r is already registered" % builder_id)
+        if expected_entry is not None:
+            raise ApprovalApplyError("new-builder request must not have an existing entry")
+        meta = request.get("new_builder")
+        if not isinstance(meta, dict):
+            raise ApprovalApplyError("new-builder request has no entry metadata")
+        output_roots = meta.get("output_roots")
+        if (not isinstance(output_roots, list) or not output_roots
+                or any(not isinstance(item, str) or not item.strip() for item in output_roots)):
+            raise ApprovalApplyError("new-builder request needs absolute output_roots")
+        target = stage_script(candidate, approved_dir, builder_id, expected_candidate)
+        merged, changes, errors = merge_schema({"params": {}}, target, request)
+        if expected_params is not None and expected_params != merged:
+            raise ApprovalApplyError("parameter schema changed since review")
+        if errors:
+            raise ApprovalApplyError("schema is not valid: %s" % "; ".join(errors))
+        digest = expected_candidate
+        approved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_entry = {
+            "script": str(target.resolve()),
+            "sha256": digest,
+            "entrypoint": str(meta.get("entrypoint") or "run"),
+            "params": merged,
+            "output_roots": list(output_roots),
+            "approval": {
+                **dict(request),
+                "candidate": str(candidate),
+                "candidate_sha256": expected_candidate,
+                "approved_sha256": digest,
+                "previous_sha256": "",
+                "approved_at": approved_at,
+                "approved_by": str(decided_by or ""),
+                "schema_added": changes,
+                "auto_approved": bool(auto_approved),
+            },
+        }
+        if meta.get("targets"):
+            new_entry["targets"] = list(meta["targets"])
+        commit_entry(allowlist_path, builder_id, None, new_entry)
+        archived = dict(request)
+        archived.update({
+            "status": "approved",
+            "decided_at": _now(),
+            "decided_by": str(decided_by or ""),
+            "decision_note": str(note or "registered new builder"),
+            "approved_sha256": digest,
+            "schema_added": changes,
+            "auto_approved": bool(auto_approved),
+        })
+        _atomic_json(archive_dir() / (request_id + ".json"), archived)
+        try:
+            (pending_dir() / (request_id + ".json")).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {
+            "approved": True,
+            "request_id": request_id,
+            "builder_id": builder_id,
+            "sha256": digest,
+            "approved_at": approved_at,
+            "schema_added": changes,
+            "new_builder": True,
+        }
     if not isinstance(entry, dict):
         raise ApprovalApplyError("unknown builder %r" % builder_id)
     if str(entry.get("sha256") or "").lower() != str(request.get("old_approved_sha256") or "").lower():

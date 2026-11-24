@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **First registration of new builders.** `request_builder_approval` now accepts
+  `request_type="new_builder"` with complete `new_params`, absolute `output_roots`, optional
+  `targets` and an entrypoint. The operator GUI creates the allowlist entry only after approval;
+  unknown builders no longer disappear as an `unknown builder` request. The GUI also accepts and
+  displays new-builder requests, and the watcher no longer calls a bare candidate-hash change a
+  “pending” approval.
+
 ## 1.6.0 - 2026-11-25
 
 - **Astra audit fixes (2026-11-23).** Applied the external audit patch set: file-lock

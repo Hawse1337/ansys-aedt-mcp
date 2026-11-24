@@ -80,6 +80,54 @@ def test_new_request_supersedes_old_pending(tmp_path: Path, monkeypatch):
         raise AssertionError("a superseded request must not be decidable")
 
 
+def test_new_builder_registration_request_and_apply(tmp_path: Path, monkeypatch):
+    current = _candidate(tmp_path, "builder.py", "def run(design=None):\n    return design\n")
+    allowlist = _allowlist(tmp_path, current, monkeypatch)
+    candidate = _candidate(
+        tmp_path, "coax.py",
+        "def run(design=None, variant=None):\n    return design, variant\n",
+    )
+    output = tmp_path / "outputs"
+    record, _ = contract.build_request(
+        "coax_coupon", str(candidate), "first registration",
+        request_type="new_builder",
+        new_params=[
+            {"name": "design", "type": "string", "required": True},
+            {"name": "variant", "type": "enum", "values": ["straight", "stepped"], "required": True},
+        ],
+        output_roots=[str(output)],
+        entrypoint="run",
+        tested=["py_compile OK"],
+    )
+    assert record["request_type"] == "new_builder"
+    assert record["old_approved_sha256"] == ""
+    assert record["new_builder"]["output_roots"] == [str(output.resolve())]
+    result = approval_apply.apply_request(
+        record, allowlist_path=allowlist, approved_dir=tmp_path / "approved",
+        decided_by="test",
+    )
+    assert result["approved"] is True
+    entry = json.loads(allowlist.read_text(encoding="utf-8"))["builders"]["coax_coupon"]
+    assert entry["sha256"] == record["candidate_sha256"]
+    assert entry["output_roots"] == [str(output.resolve())]
+    assert entry["params"]["variant"]["type"] == "enum"
+    assert entry["approval"]["request_id"] == record["request_id"]
+
+
+def test_existing_builder_cannot_use_new_builder_type(tmp_path: Path, monkeypatch):
+    current = _candidate(tmp_path, "builder.py", "def run(design=None):\n    return design\n")
+    _allowlist(tmp_path, current, monkeypatch)
+    candidate = _candidate(
+        tmp_path, "another.py", "def run(design=None):\n    return design\n",
+    )
+    with pytest.raises(contract.ApprovalRequestError, match="already exists"):
+        contract.build_request(
+            "demo", str(candidate), "bad registration",
+            request_type="new_builder", new_params=[],
+            output_roots=[str(tmp_path / "outputs")],
+        )
+
+
 def test_repeated_requests_report_churn_warning(tmp_path: Path, monkeypatch):
     current = _candidate(tmp_path, "builder.py", "def run(design=None):\n    return design\n")
     _allowlist(tmp_path, current, monkeypatch)

@@ -539,6 +539,9 @@ async def request_builder_approval(
     platform: str = "",
     session_id: str = "",
     session_title: str = "",
+    output_roots: list[str] | None = None,
+    targets: list[dict[str, Any]] | None = None,
+    entrypoint: str = "run",
 ) -> dict[str, Any]:
     r"""Create an operator approval request for a builder candidate.
 
@@ -555,6 +558,11 @@ async def request_builder_approval(
             candidate_path=r"C:\...\scripts\candidates\p0_model_codex_20261122.py",
             reason="fix half-model port integration line and boundaries",
         )
+
+    First registration of a new builder uses ``request_type="new_builder"`` plus
+    absolute ``output_roots`` and at least the complete ``new_params`` schema.
+    The operator approves the capability and the GUI creates the allowlist entry;
+    the tool itself never edits the allowlist.
     """
     from aedt_guard.approval_contract import (
         ApprovalPreflightError,
@@ -581,6 +589,9 @@ async def request_builder_approval(
             session_title=session_title,
             tested=tested,
             risk_notes=risk_notes,
+            output_roots=output_roots,
+            targets=targets,
+            entrypoint=entrypoint,
         )
     except ApprovalPreflightError as exc:
         _audit_worker_call(

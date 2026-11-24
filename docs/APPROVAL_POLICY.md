@@ -59,6 +59,29 @@ Do not submit a request until the candidate has been run end-to-end in a
 temporary directory. `tested` empty is reported as a warning; repeated incomplete
 requests are discouraged.
 
+## 2b. First registration of a new builder
+
+`request_type="builder_change"` requires the builder to already exist. For a new
+builder id use:
+
+```python
+request_builder_approval(
+    builder_id="coax_tem_twoport_coupon",
+    candidate_path=r"C:\...\coax_coupon.py",
+    request_type="new_builder",
+    reason="independent coax coupon validation",
+    new_params=[...],                       # complete run() parameter schema
+    output_roots=[r"C:\...\outputs"],
+    targets=[{"path": r"C:\...\CoaxCoupon.aedt", "sha256": "..."}],  # optional
+    tested=["py_compile OK"],
+)
+```
+
+The operator approves the capability in the GUI; only then is the allowlist
+entry created. The request does not execute the candidate and never edits the
+allowlist itself. `targets` can pin the blank template and its hash; the
+operator is still responsible for providing a usable template.
+
 ## 3. Wait once; do not poll in a loop
 
 Use the single-call wait tool instead of querying the pending file every step:

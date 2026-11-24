@@ -150,14 +150,19 @@ class ApprovalWatcher:
                 meta, _path = _request_metadata(candidate)
                 reason = str((meta or {}).get("reason") or "").strip()
                 source = str((meta or {}).get("platform") or "").strip()
-                body = "%s 的候选脚本已更新，需要重新审批。\n%s" % (builder_id, candidate.name)
+                body = (
+                    "%s 的候选脚本已变化，但当前没有对应的待审批请求。\n"
+                    "如要审批，请先调用 request_builder_approval 提交；"
+                    "新 builder 使用 request_type='new_builder'。\n%s"
+                    % (builder_id, candidate.name)
+                )
                 if source:
                     body += "\n来源：%s" % source
                 if reason:
                     body += "\n说明：%s" % reason
                 body += "\nSHA-256：%s…" % digest[:16]
-                self._notify("AEDT Builder 待审批", body)
-                self._log("[notify] pending candidate hash %s" % digest[:16])
+                self._notify("AEDT Builder 候选已变化", body)
+                self._log("[notify] candidate changed, no pending request %s" % digest[:16])
             return
 
         # Approved script but the allowlist schema does not declare everything

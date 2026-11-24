@@ -23,7 +23,7 @@ from .managed import state_dir
 from guard_file_lock import inbox_transaction
 
 CONTRACT_VERSION = 2
-REQUEST_TYPES = {"builder_change", "schema_only"}
+REQUEST_TYPES = {"builder_change", "schema_only", "new_builder"}
 STATUSES = {"pending", "approved", "denied", "expired", "cancelled", "superseded"}
 
 
@@ -76,13 +76,18 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
             pass
 
 
-def _get_builder_entry(builder_id: str) -> dict[str, Any]:
+def _get_builder_entry(builder_id: str, *, required: bool = True) -> dict[str, Any] | None:
     if not isinstance(builder_id, str) or not builder_id.strip():
         raise ApprovalRequestError("builder_id is required")
     builders = load_allowlist().get("builders") or {}
     entry = builders.get(builder_id)
     if not isinstance(entry, dict):
-        raise ApprovalRequestError("unknown builder: %s" % builder_id)
+        if required:
+            raise ApprovalRequestError(
+                "unknown builder: %s (first registration needs request_type='new_builder')"
+                % builder_id
+            )
+        return None
     old = str(entry.get("sha256") or "").lower()
     if len(old) != 64 or any(c not in "0123456789abcdef" for c in old):
         raise ApprovalRequestError("allowlist has no valid sha256 for %s" % builder_id)
@@ -96,6 +101,30 @@ def _validate_candidate(candidate_path: str) -> Path:
     if candidate.suffix.lower() != ".py" or not candidate.is_file():
         raise ApprovalRequestError("candidate_path must be an existing .py file: %s" % candidate)
     return candidate
+
+
+def _new_builder_metadata(output_roots: Iterable[str] | None, targets: Iterable[dict[str, Any]] | None,
+                          entrypoint: str) -> dict[str, Any]:
+    roots: list[str] = []
+    for value in output_roots or []:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            raise ApprovalRequestError("new builder output_roots must be absolute paths")
+        roots.append(str(path.resolve()))
+    if not roots:
+        raise ApprovalRequestError("new builder needs at least one absolute output_roots entry")
+    target_rows: list[dict[str, Any]] = []
+    for value in targets or []:
+        if not isinstance(value, dict):
+            raise ApprovalRequestError("new builder targets must be objects")
+        target_rows.append(dict(value))
+    name = str(entrypoint or "run").strip()
+    if not name.isidentifier():
+        raise ApprovalRequestError("new builder entrypoint must be a Python identifier")
+    return {"entrypoint": name, "output_roots": roots, "targets": target_rows}
 
 
 def _sidecar_path(candidate: Path) -> Path:
@@ -388,12 +417,30 @@ def build_request(
     session_title: str = "",
     tested: Iterable[str] | None = None,
     risk_notes: str = "",
+    output_roots: Iterable[str] | None = None,
+    targets: Iterable[dict[str, Any]] | None = None,
+    entrypoint: str = "run",
 ) -> tuple[dict[str, Any], Path]:
     if request_type not in REQUEST_TYPES:
         raise ApprovalRequestError("request_type must be one of %s" % sorted(REQUEST_TYPES))
     if not isinstance(reason, str) or not reason.strip():
         raise ApprovalRequestError("reason is required")
-    entry = _get_builder_entry(builder_id)
+    existing_entry = _get_builder_entry(builder_id, required=False)
+    if request_type == "new_builder":
+        if existing_entry is not None:
+            raise ApprovalRequestError(
+                "builder %r already exists; use request_type='builder_change'" % builder_id
+            )
+        entry: dict[str, Any] = {}
+        new_builder = _new_builder_metadata(output_roots, targets, entrypoint)
+    else:
+        if existing_entry is None:
+            raise ApprovalRequestError(
+                "unknown builder: %s (use request_type='new_builder' for first registration)"
+                % builder_id
+            )
+        entry = existing_entry
+        new_builder = None
     candidate = _validate_candidate(candidate_path)
     candidate_sha = _sha256(candidate)
     preflight_request = {
@@ -416,24 +463,26 @@ def build_request(
             same_candidate = Path(str(existing.get("candidate") or "")).resolve() == candidate
         except OSError:
             same_candidate = False
+        old_hash = str((entry or {}).get("sha256") or "").lower()
         if (
             existing.get("builder_id") == builder_id
             and existing.get("request_type") == request_type
             and existing.get("candidate_sha256") == candidate_sha
-            and existing.get("old_approved_sha256") == str(entry["sha256"]).lower()
+            and existing.get("old_approved_sha256") == old_hash
             and (existing.get("new_params") or []) == preflight_request["new_params"]
             and (existing.get("new_enum_values") or {}) == preflight_request["new_enum_values"]
             and same_candidate
         ):
             return existing, Path(str(existing["request_path"]))
     if (
-        str(entry.get("sha256") or "").lower() == candidate_sha
+        entry is not None
+        and str(entry.get("sha256") or "").lower() == candidate_sha
         and not preflight_request["new_params"]
         and not preflight_request["new_enum_values"]
     ):
         return _already_applied_record(builder_id, candidate, candidate_sha, entry)
-    _enforce_budget(builder_id, entry)
-    churn = approval_churn(builder_id, entry)
+    _enforce_budget(builder_id, entry or {})
+    churn = approval_churn(builder_id, entry or {})
     # Include the request being created in the operator-facing count.
     churn["requests_24h"] = int(churn["requests_24h"]) + 1
     if churn["requests_24h"] >= int(churn["warn_after"]) and churn["level"] == "ok":
@@ -454,7 +503,7 @@ def build_request(
         "request_type": request_type,
         "candidate": str(candidate),
         "candidate_sha256": candidate_sha,
-        "old_approved_sha256": str(entry["sha256"]).lower(),
+        "old_approved_sha256": str((entry or {}).get("sha256") or "").lower(),
         "platform": str(platform or ""),
         "session_id": str(session_id or ""),
         "session_title": str(session_title or ""),
@@ -467,6 +516,7 @@ def build_request(
         "created_by": "aedt_guard",
         "superseded_requests": superseded,
         "approval_churn": churn,
+        **({"new_builder": new_builder} if new_builder is not None else {}),
         "preflight": preflight,
     }
     path = pending_dir() / (request_id + ".json")

@@ -618,10 +618,23 @@ class ApproverApp:
             if request is None:
                 return
             builder = str(request.get("builder_id") or "")
-            if builder in list(self.builder_combo["values"]):
+            if builder:
+                values = list(self.builder_combo["values"])
+                if builder not in values:
+                    self.builder_combo["values"] = values + [builder]
                 self.builder_var.set(builder)
                 self.current_id = builder
-                self.check_current()
+                if str(request.get("request_type")) != "new_builder":
+                    self.check_current()
+                else:
+                    self.status_var.set("新 builder 注册（批准后写入 allowlist）")
+                    self.status_label.configure(foreground="#555")
+                    self._set_detail(
+                        "builder: %s\n候选: %s\nentrypoint: %s\noutput_roots: %s"
+                        % (builder, request.get("candidate", ""),
+                           (request.get("new_builder") or {}).get("entrypoint", "run"),
+                           ", ".join((request.get("new_builder") or {}).get("output_roots") or []))
+                    )
             candidate = str(request.get("candidate") or "")
             if candidate:
                 self.candidate_var.set(candidate)
@@ -1061,19 +1074,21 @@ class ApproverApp:
     def apply_approval(self) -> None:
         entry = self._entry()
         candidate = self._candidate()
-        if not entry or candidate is None or not candidate.is_file():
+        request = self._active_request or self.request_meta or {}
+        is_new = str(request.get("request_type") or "") == "new_builder"
+        if candidate is None or not candidate.is_file() or (not entry and not is_new):
             messagebox.showwarning("缺少文件", "请先选择 builder 和候选脚本文件。")
             return
         source = format_source(self.request_meta)
         requested_at = request_time(self.request_meta, candidate)
         reason = str(self.request_meta.get("reason") or "") if self.request_meta else ""
-        old_hash = str(entry.get("sha256", "")).lower()
+        old_hash = str((entry or {}).get("sha256", "")).lower()
         new_hash = sha256(candidate)
-        merged_params = dict(entry.get("params") or {})
+        merged_params = dict((entry or {}).get("params") or {})
         schema_changes: list[str] = []
         try:
             merged_params, schema_changes, schema_errors = merge_schema(
-                entry, candidate, self._active_request or self.request_meta
+                entry or {"params": {}}, candidate, request
             )
             if schema_errors:
                 messagebox.showerror("参数表无法自动补全", "\n".join(schema_errors))
@@ -1082,15 +1097,15 @@ class ApproverApp:
             messagebox.showerror("审批失败", str(exc))
             return
         message = (
-            "确认已完成人工 review，并批准新的 builder 版本？\n\n"
-            "Builder: %s\n请求来源: %s\n请求时间: %s\n请求说明: %s\n当前 hash: %s\n候选 hash: %s\n参数数量: %d"
+            ("确认注册这个新 builder？\n\n" if is_new else "确认已完成人工 review，并批准新的 builder 版本？\n\n")
+            + "Builder: %s\n请求来源: %s\n请求时间: %s\n请求说明: %s\n当前 hash: %s\n候选 hash: %s\n参数数量: %d"
             "\n参数表自动补全: %s"
             % (
                 self.current_id,
                 source,
                 requested_at,
                 reason or "(未填写)",
-                old_hash,
+                old_hash or "(新 builder)",
                 new_hash,
                 len(merged_params),
                 ", ".join(schema_changes) if schema_changes else "无",
@@ -1107,7 +1122,8 @@ class ApproverApp:
                     raise ValueError("Displayed candidate differs from approval request; refresh the inbox")
                 result = apply_request(request, allowlist_path=self.allowlist_path,
                                        approved_dir=self.approved_dir, decided_by=getpass.getuser(),
-                                       expected_entry=entry, expected_params=merged_params)
+                                       expected_entry=None if is_new else entry,
+                                       expected_params=merged_params)
                 digest, approved_at = result["sha256"], result["approved_at"]
                 self._active_request = None
             else:
