@@ -1,4 +1,4 @@
-# Ansys AEDT MCP
+﻿# Ansys AEDT MCP
 
 <p>
   <a href="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml/badge.svg"></a>
@@ -56,7 +56,7 @@ Then connect an MCP client to `.\mcp_server.py` (stdio). See
 | unmanaged detection | `guard_status` lists every live `ansysedt.exe` as managed/unmanaged and reports `scan.enforcement` |
 | arbitrary code | `run_python_code` / `run_python_script` refused at MCP and worker layers unless a human operator enables them |
 | approved builders | `run_approved_builder` executes an operator-allowlisted builder (script hash + typed params + output roots) so agents can run repeated campaigns autonomously without per-run code opt-in |
-| approval requests | `request_builder_approval` lets an agent submit a candidate path + reason; the guard computes hashes, writes a pending request, and never edits the allowlist. The v9 GUI watches the request inbox and can approve/load the candidate |
+| approval requests | `request_builder_approval` lets an agent submit a candidate path + reason; the guard computes hashes, writes a pending request, and never edits the allowlist. The v1.7 GUI watches the request inbox, auto-refreshes pending rows, and clears stale approvals |
 | tokens | `AEDT_GUARD_ENFORCE=1` binds run tokens to project/design/setup for the dedicated solve entries; operator-approved builders are vetted code and are not token-enforced |
 | audit | launch/release and guarded-run commands land in `guard_audit.jsonl` with enforcement-mode fields |
 | identity | PyAEDT app objects are checked against the verified desktop |
@@ -225,7 +225,7 @@ Local extensions retained from this MCP:
 
 ## Dedicated Maxwell tools
 
-The server adds 15 `maxwell_*` tools; the full surface is 65 tools. They cover coil terminals, windings and links, current excitations, rotational/translational motion bands, force/torque, eddy effects, setup creation, local mesh operations, design readback, activity, numerical results and field plots. Each requires explicit `project_name`, `design_name` and one `pid`/`port`.
+The server adds 15 `maxwell_*` tools; the full surface is 67 tools. They cover coil terminals, windings and links, current excitations, rotational/translational motion bands, force/torque, eddy effects, setup creation, local mesh operations, design readback, activity, numerical results and field plots. Each requires explicit `project_name`, `design_name` and one `pid`/`port`.
 
 See [Maxwell tools, parameters, examples and verification limits](MAXWELL_TOOLS.md) and the [offline/live verification record](MAXWELL_VALIDATION.md). Restart the MCP server and refresh the client's tool list after updating; the existing AEDT window can remain open. Motion tools assign an existing band and do not construct or validate enclosing geometry. Motor transient behavior, mesh/time-step convergence and engineering conclusions require separate validation.
 
@@ -245,6 +245,35 @@ For solved Icepak designs, `export_results(export_type="convergence")` exports t
 
 Resources `aedt://status` and `aedt://agent-instructions` never attach implicitly.
 
+## Approval workflow (2026-11-24)
+
+- `request_builder_approval` runs server-side preflight before writing a request: compile,
+  `run()` coverage, parameter schema and static risk.
+- A new request supersedes older pending requests for the same builder; `already_approved` is
+  returned when the allowlist already matches.
+- `wait_for_builder_approval` does a single wait. On timeout, park the task; do not poll in a loop.
+- Approval applies the script hash and missing schema entries atomically. Explicit
+  `min`/`max`/`default`/`required` declarations win over inferred schema.
+- `approval_budget_per_day` is an optional hard cap. `approval_churn` warns on repeated incremental
+  requests; `approval_churn_limit` is an optional hard cap (see `docs/APPROVAL_POLICY.md`).
+- `ff_step_deg` (or an equivalent native-sampling parameter) must be approved once; changing its
+  value afterwards is a normal builder run, not a new approval.
+
+## Report images and native evidence
+
+`export_report_image` is a fixed, read-only tool and needs no builder approval. It can export a saved
+report by `report_name` or create native 3D / E-plane / H-plane images. It cannot turn 10-degree
+solved far-field data into true 5-degree data; the builder's infinite-sphere sampling must be set
+before the solve. `export_report_image` never saves the project or changes geometry.
+
+## Verification
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+Current offline record: **519 passed, 1 skipped, 118 subtests** (2026-11-24). Live AEDT acceptance
+remains separate; an API success is submission evidence, not convergence proof.
 ## Remove Legacy Toolbar
 
 The old `Start AEDT MCP Bridge` and `Stop AEDT MCP Bridge` buttons are not used. Remove only those known entries with:
@@ -261,3 +290,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\remove_legacy
 ```
 
 Live acceptance covers explicit PID and port targeting, repeated commands on one broker, disposable HFSS project save, and normal AEDT close while the broker is still connected. It fails if the "being used by another application, script or extension wizard" dialog appears.
+
+
