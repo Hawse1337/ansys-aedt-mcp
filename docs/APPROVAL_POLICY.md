@@ -110,7 +110,28 @@ running
 Do not use goal auto-rounds as an approval poller. A pending approval is a
 checkpoint, not a reason to consume rounds or ask the operator to close windows.
 
-## 7. Operator-visible rule
+## 7. Measurement/report sampling is a one-time schema approval
+
+A true 5° native pattern is not an export-only operation: the HFSS infinite
+sphere (far-field sampling) must be created with that step before the solve.
+When the approved builder does not expose the sampling step, the first request to
+add it (for example `ff_step_deg`) is a builder capability change and needs
+approval.
+
+After that one approval:
+
+- changing `ff_step_deg` from 10 to 5 (or another allowed value) is a normal
+  parameter run and must **not** request a new approval;
+- `export_report_image`/`export_farfield_report` do not require approval for
+  exporting an existing report or a newly created 3D/E/H plot;
+- a fixed report export cannot invent 5° data from a 10° solved sphere. The
+  model must be solved with the desired native sampling.
+
+Agents should consolidate measurement parameters into one schema request and then
+reuse the approved builder for value changes. They must not create a new
+candidate script for every sampling value.
+
+## 8. Operator-visible rule
 
 The GUI shows pending requests, source, preflight risk and campaign gate. The
 operator should not have to:

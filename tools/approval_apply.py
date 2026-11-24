@@ -123,6 +123,16 @@ def merge_schema(
                 if value not in values:
                     values.append(value)
             existing["values"] = values
+        else:
+            # An inferred/heuristic entry may already exist. The operator's
+            # explicit declaration still wins for bounds/default/required.
+            changed = False
+            for key in ("min", "max", "default", "required"):
+                if key in spec and existing.get(key) != spec[key]:
+                    existing[key] = spec[key]
+                    changed = True
+            if changed:
+                changes.append("~ %s declaration" % name)
     for name, values in ((request or {}).get("new_enum_values") or {}).items():
         spec = merged.get(name)
         if not isinstance(spec, dict) or spec.get("type") != "enum":

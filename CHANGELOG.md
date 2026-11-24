@@ -7,6 +7,10 @@
   approval pre-state checks, launcher ownership/close verification, and stricter approval
   request content validation. Full offline guard suite: 517 passed, 1 skipped (regular
   Windows long-path case; the extended-length variant passes separately). GUI selftest passes.
+- **Measurement sampling / approval UX.** Documented that a true 5° native pattern needs the
+  builder's far-field sampling parameter approved once; changing its value afterwards is a normal
+  parameter run, not another approval. Approval schema merging now preserves explicit
+  `min`/`max`/`default`/`required` declarations when an inferred entry already exists.
 - **Approval/pending cleanup and report-name fix.** Superseded approvals are archived and removed
   from `pending/` (old tombstones are purged on reconcile), and `export_report_image` accepts an
   omitted `report_name` without passing `None` through the backend.
