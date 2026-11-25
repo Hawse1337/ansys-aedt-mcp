@@ -1,4 +1,4 @@
-﻿# Ansys AEDT MCP
+# Ansys AEDT MCP
 
 <p>
   <a href="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml/badge.svg"></a>
@@ -205,8 +205,9 @@ set_infinite_sphere(
 ```
 
 `theta_start=-180` / `theta_stop=180` enables a native full-360 E-plane report.
-The tool replaces only the named `Radiation/InfiniteSphere` field setup. It
-reports `requires_resolve=true`; run the solve again before exporting far fields.
+The tool edits only the named `Radiation/InfiniteSphere` field setup. It
+reports `requires_resolve=false`; far-field sampling is post-processing, so no
+FEM re-solve is needed. Recreate/export the report to read the new angles.
 This is zero-approval and does not require editing a builder.
 
 ## Verification
@@ -352,90 +353,6 @@ report by `report_name` or create native 3D / E-plane / H-plane images. It canno
 solved far-field data into true 5-degree data; the builder's infinite-sphere sampling must be set
 before the solve. `export_report_image` never saves the project or changes geometry.
 
-### Custom native report specs (read-only)
-
-For report types beyond the fixed 3D/E/H templates, pass `report_specs` to
-`export_report_image`. Each entry supplies the AEDT report fields directly:
-
-```python
-export_report_image(
-    project_path=...,
-    design_name="Trunc_10GHz",
-    output_dir=...,
-    port=59543,
-    report_specs=[{
-        "name": "E_full_360",
-        "expressions": ["dB(GainTotal)"],
-        "report_category": "Far Fields",
-        "plot_type": "Radiation Pattern",
-        "setup_sweep_name": "Setup1 : LastAdaptive",
-        "variations": {"Freq": ["10GHz"], "Phi": ["0deg", "180deg"], "Theta": ["All"]},
-        "primary_sweep_variable": "Theta",
-        "context": "InfiniteSphere",
-    }],
-)
-```
-
-#### Native trace overlay (copy/paste trace data)
-
-AEDT can combine traces whose primary sweeps differ by copying trace data and
-pasting it as static data into the target report. The guard exposes this as
-`overlay_specs` on a report spec. For example, an H-plane Phi trace can be
-pasted into an E-plane Theta polar report:
-
-```python
-report_specs=[{
-    "name": "EH_native_overlay",
-    "expressions": ["dB(GainTotal)"],
-    "report_category": "Far Fields",
-    "plot_type": "Radiation Pattern",
-    "setup_sweep_name": "Setup1 : LastAdaptive",
-    "variations": {"Freq": ["10GHz"], "Phi": ["0deg"], "Theta": ["All"]},
-    "primary_sweep_variable": "Theta",
-    "context": "InfiniteSphere",
-    "overlay_specs": [{
-        "name": "EH_native_overlay_H",
-        "expressions": ["dB(GainTotal)"],
-        "plot_type": "Radiation Pattern",
-        "setup_sweep_name": "Setup1 : LastAdaptive",
-        "variations": {"Freq": ["10GHz"], "Theta": ["90deg"], "Phi": ["All"]},
-        "primary_sweep_variable": "Phi",
-        "context": "InfiniteSphere",
-    }],
-}]
-```
-
-The base report keeps its live trace; each overlay is copied with
-`CopyTracesData` and pasted with `PasteTraces`, so the exported JPG contains
-both curves in one native AEDT report. Temporary reports are deleted afterwards.
-This is still read-only: it creates native reports, exports JPGs, and removes
-the temporary reports. It never rebuilds, solves, saves or changes geometry.
-No builder/allowlist approval is required. Up to 25 specs per call; report
-names must be safe filenames.
-
-### Far-field sphere ranges (no approval)
-
-Changing the native infinite-sphere sampling range is a fixed, non-code tool:
-
-```python
-set_infinite_sphere(
-    project_path=...,
-    design_name="Trunc_10GHz",
-    theta_start=-180,
-    theta_stop=180,
-    theta_step=5,
-    phi_start=0,
-    phi_stop=360,
-    phi_step=5,
-    port=59543,
-)
-```
-
-`theta_start=-180` / `theta_stop=180` enables a native full-360 E-plane report.
-The tool replaces only the named `Radiation/InfiniteSphere` field setup. It
-reports `requires_resolve=true`; run the solve again before exporting far fields.
-This is zero-approval and does not require editing a builder.
-
 ## Verification
 
 ```powershell
@@ -451,90 +368,6 @@ The old `Start AEDT MCP Bridge` and `Stop AEDT MCP Bridge` buttons are not used.
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\remove_legacy_aedt_mcp_toolbar.ps1" -AedtRoot "G:\ANSYS206\ANSYS Inc\v261\AnsysEM"
 ```
-
-### Custom native report specs (read-only)
-
-For report types beyond the fixed 3D/E/H templates, pass `report_specs` to
-`export_report_image`. Each entry supplies the AEDT report fields directly:
-
-```python
-export_report_image(
-    project_path=...,
-    design_name="Trunc_10GHz",
-    output_dir=...,
-    port=59543,
-    report_specs=[{
-        "name": "E_full_360",
-        "expressions": ["dB(GainTotal)"],
-        "report_category": "Far Fields",
-        "plot_type": "Radiation Pattern",
-        "setup_sweep_name": "Setup1 : LastAdaptive",
-        "variations": {"Freq": ["10GHz"], "Phi": ["0deg", "180deg"], "Theta": ["All"]},
-        "primary_sweep_variable": "Theta",
-        "context": "InfiniteSphere",
-    }],
-)
-```
-
-#### Native trace overlay (copy/paste trace data)
-
-AEDT can combine traces whose primary sweeps differ by copying trace data and
-pasting it as static data into the target report. The guard exposes this as
-`overlay_specs` on a report spec. For example, an H-plane Phi trace can be
-pasted into an E-plane Theta polar report:
-
-```python
-report_specs=[{
-    "name": "EH_native_overlay",
-    "expressions": ["dB(GainTotal)"],
-    "report_category": "Far Fields",
-    "plot_type": "Radiation Pattern",
-    "setup_sweep_name": "Setup1 : LastAdaptive",
-    "variations": {"Freq": ["10GHz"], "Phi": ["0deg"], "Theta": ["All"]},
-    "primary_sweep_variable": "Theta",
-    "context": "InfiniteSphere",
-    "overlay_specs": [{
-        "name": "EH_native_overlay_H",
-        "expressions": ["dB(GainTotal)"],
-        "plot_type": "Radiation Pattern",
-        "setup_sweep_name": "Setup1 : LastAdaptive",
-        "variations": {"Freq": ["10GHz"], "Theta": ["90deg"], "Phi": ["All"]},
-        "primary_sweep_variable": "Phi",
-        "context": "InfiniteSphere",
-    }],
-}]
-```
-
-The base report keeps its live trace; each overlay is copied with
-`CopyTracesData` and pasted with `PasteTraces`, so the exported JPG contains
-both curves in one native AEDT report. Temporary reports are deleted afterwards.
-This is still read-only: it creates native reports, exports JPGs, and removes
-the temporary reports. It never rebuilds, solves, saves or changes geometry.
-No builder/allowlist approval is required. Up to 25 specs per call; report
-names must be safe filenames.
-
-### Far-field sphere ranges (no approval)
-
-Changing the native infinite-sphere sampling range is a fixed, non-code tool:
-
-```python
-set_infinite_sphere(
-    project_path=...,
-    design_name="Trunc_10GHz",
-    theta_start=-180,
-    theta_stop=180,
-    theta_step=5,
-    phi_start=0,
-    phi_stop=360,
-    phi_step=5,
-    port=59543,
-)
-```
-
-`theta_start=-180` / `theta_stop=180` enables a native full-360 E-plane report.
-The tool replaces only the named `Radiation/InfiniteSphere` field setup. It
-reports `requires_resolve=true`; run the solve again before exporting far fields.
-This is zero-approval and does not require editing a builder.
 
 ## Verification
 

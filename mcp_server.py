@@ -1590,10 +1590,12 @@ async def set_infinite_sphere(
 
     This is the fixed, non-code way to obtain a native 360-degree E-plane setup
     (for example ``theta_start=-180, theta_stop=180, theta_step=5``) without
-    changing a builder script and without an approval request. It replaces only
-    the named Radiation/infinite-sphere field setup; geometry, materials, ports,
-    excitations and the solve setup are untouched. The new angles require a new
-    solve before far-field export. The tool never uses arbitrary Python code.
+    changing a builder script and without an approval request. It edits only the
+    named Radiation/infinite-sphere field setup; geometry, materials, ports,
+    excitations and the solve setup are untouched. Existing solved fields are
+    reused: far-field sampling is post-processing, so no FEM re-solve is needed;
+    only recreate/export the report to read the new angles. The tool never uses
+    arbitrary Python code.
     """
     _reject_guard_state_path(project_path, "project path")
     if (pid is None) == (port is None):

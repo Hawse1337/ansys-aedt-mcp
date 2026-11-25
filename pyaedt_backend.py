@@ -1224,9 +1224,10 @@ class PyAedtBackend:
         """Set only the far-field infinite-sphere sampling ranges.
 
         This is a fixed, non-code capability for the common "native E-plane 360"
-        case. It never changes geometry, materials, ports or excitation; it only
-        replaces the named Radiation field setup. A new solve is required for the
-        new angles, so the response explicitly says so.
+        case. It never changes geometry, materials, ports or excitation. An
+        existing sphere is edited in place, so the already-solved fields are
+        reused and no FEM re-solve is required; only the far-field sampling
+        (post-processing) changes.
         """
         name = _optional_text(arguments, "name") or "InfiniteSphere"
         if any(char in name for char in "\\/:*?\"<>|"):
@@ -1247,16 +1248,45 @@ class PyAedtBackend:
         for label, step in (("theta_step", theta_step), ("phi_step", phi_step)):
             if not (0.5 <= step <= 30.0):
                 raise BackendCommandError("%s must be between 0.5 and 30 degrees" % label)
+        existing = None
+        try:
+            for setup in list(getattr(app, "field_setups", []) or []):
+                if str(getattr(setup, "name", "")) == name:
+                    existing = setup
+                    break
+        except Exception:  # noqa: BLE001 - fall back to creating a new setup
+            existing = None
+        if existing is not None:
+            # Edit in place. Far-field sampling is post-processing over the already
+            # solved fields; deleting/recreating the setup or re-running HFSS would
+            # discard/recompute data unnecessarily.
+            existing.theta_start = theta_start
+            existing.theta_stop = theta_stop
+            existing.theta_step = theta_step
+            existing.phi_start = phi_start
+            existing.phi_stop = phi_stop
+            existing.phi_step = phi_step
+            return {
+                "target": _target_dict(target),
+                "project_name": getattr(app, "project_name", None),
+                "design_name": getattr(app, "design_name", None),
+                "name": name,
+                "theta_start": theta_start,
+                "theta_stop": theta_stop,
+                "theta_step": theta_step,
+                "phi_start": phi_start,
+                "phi_stop": phi_stop,
+                "phi_step": phi_step,
+                "field_setup_updated": True,
+                "requires_resolve": False,
+                "far_field_data_reused": True,
+                "geometry_changed": False,
+                "note": "Far-field sampling updated in place; no FEM re-solve is required. "
+                        "Recreate/open the report to read the new angles.",
+            }
         design = getattr(app, "odesign", None)
         if design is None:
             raise BackendCommandError("design object is unavailable")
-        try:
-            radiation = design.GetChildObject("Radiation")
-            existing = radiation.GetChildObject(name) if radiation is not None else None
-            if existing is not None:
-                existing.Delete()
-        except Exception:  # noqa: BLE001 - no existing sphere is a normal case
-            pass
         sphere = app.insert_infinite_sphere(
             name=name,
             theta_start=theta_start,
@@ -1278,9 +1308,11 @@ class PyAedtBackend:
             "phi_stop": phi_stop,
             "phi_step": phi_step,
             "field_setup_created": bool(sphere),
-            "requires_resolve": True,
+            "requires_resolve": False,
+            "far_field_data_reused": False,
             "geometry_changed": False,
-            "note": "Only the far-field sampling sphere changed; re-solve before exporting far fields.",
+            "note": "New far-field sampling sphere created; no FEM solve is required, "
+                    "but the report may need to be recreated for the new angles.",
         }
 
     def _export_report_image(

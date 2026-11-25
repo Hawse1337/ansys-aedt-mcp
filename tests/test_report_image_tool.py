@@ -169,12 +169,18 @@ def test_export_saved_report_preserves_operator_report(tmp_path: Path):
     assert post.deleted == []
 
 
-def test_set_infinite_sphere_changes_only_field_setup():
-    existing = SimpleNamespace(Delete=Mock())
-    radiation = SimpleNamespace(GetChildObject=Mock(return_value=existing))
-    design = SimpleNamespace(GetChildObject=Mock(return_value=radiation))
+def test_set_infinite_sphere_edits_existing_setup_without_resolve():
+    existing = SimpleNamespace(
+        name="InfiniteSphere",
+        theta_start=0.0,
+        theta_stop=180.0,
+        theta_step=10.0,
+        phi_start=0.0,
+        phi_stop=360.0,
+        phi_step=10.0,
+    )
     app = SimpleNamespace(
-        odesign=design,
+        field_setups=[existing],
         insert_infinite_sphere=Mock(return_value=object()),
         project_name="p",
         design_name="d",
@@ -193,18 +199,14 @@ def test_set_infinite_sphere_changes_only_field_setup():
             "phi_step": 5,
         },
     )
-    existing.Delete.assert_called_once()
-    app.insert_infinite_sphere.assert_called_once_with(
-        name="InfiniteSphere",
-        theta_start=-180.0,
-        theta_stop=180.0,
-        theta_step=5.0,
-        phi_start=0.0,
-        phi_stop=360.0,
-        phi_step=5.0,
-    )
+    app.insert_infinite_sphere.assert_not_called()
+    assert existing.theta_start == -180.0
+    assert existing.theta_stop == 180.0
+    assert existing.theta_step == 5.0
+    assert existing.phi_step == 5.0
     assert result["geometry_changed"] is False
-    assert result["requires_resolve"] is True
+    assert result["requires_resolve"] is False
+    assert result["far_field_data_reused"] is True
 
 
 def test_export_report_image_rejects_unknown_plot(tmp_path: Path):

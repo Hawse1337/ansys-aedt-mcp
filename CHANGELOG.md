@@ -5,7 +5,7 @@
 - **Far-field sphere setup is now a fixed zero-approval tool.** `set_infinite_sphere` replaces
   only the named Radiation/InfiniteSphere field setup, so widening theta to -180..180 or changing
   phi/step no longer requires a builder code change or an approval request. It reports
-  `requires_resolve=true`; geometry and solver settings are untouched.
+  `requires_resolve=false`; no FEM re-solve is needed, and geometry/solver settings are untouched.
 - **Native trace overlays.** `report_specs` now accepts `overlay_specs`: the guard creates the
   source report, uses AEDT's native `CopyTracesData` + `PasteTraces` to paste its trace data as a
   static trace into the base report, then exports the base JPG. This combines traces whose primary

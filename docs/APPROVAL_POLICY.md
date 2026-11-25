@@ -23,7 +23,7 @@ The following fixed tools are zero-approval:
 
 - `export_report_image` (3D / E / H; `report_name` for saved reports; custom
   `report_specs` / `overlay_specs`);
-- `set_infinite_sphere` (far-field sampling ranges only; requires a new solve);
+- `set_infinite_sphere` (far-field sampling ranges only; no FEM re-solve);
 - `export_farfield_report` (CSV cuts);
 - `screenshot` (model view);
 - `run_approved_builder` with parameters already in the schema.
@@ -154,10 +154,12 @@ set_infinite_sphere(
 )
 ```
 
-It changes only the named Radiation field setup (geometry, ports, materials,
+It edits only the named Radiation field setup (geometry, ports, materials,
 excitations and solve setup are untouched), needs no builder/allowlist approval,
-and reports `requires_resolve=true`. The model must be re-solved after the
-change; a fixed report export cannot invent angles that were not solved.
+and reports `requires_resolve=false`. Far-field sampling is post-processing over
+the already solved fields; no FEM re-solve is required. Recreate/export the
+report to read the new angles. A report cannot invent angles for a design with no
+solved field data at all.
 
 Use builder approval only when the builder script itself changes (geometry, port
 behaviour, or new code). Do not add a new builder parameter just to widen or
