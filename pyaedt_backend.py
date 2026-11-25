@@ -39,6 +39,7 @@ _HFSS_COMMANDS = {
     "finalize_solve",
     "export_farfield_report",
     "export_report_image",
+    "set_infinite_sphere",
 }
 _SOLUTION_TYPES = {
     "DrivenModal": "Modal",
@@ -847,6 +848,8 @@ class PyAedtBackend:
             return self._export_farfield_report(app, target, arguments)
         if command == "export_report_image":
             return self._export_report_image(app, target, arguments)
+        if command == "set_infinite_sphere":
+            return self._set_infinite_sphere(app, target, arguments)
 
         running = bool(_read_value(app, "are_there_simulations_running"))
         setups = list(app.get_setups())
@@ -1210,6 +1213,74 @@ class PyAedtBackend:
             "project_name": project_name,
             "path": path or None,
             "saved": saved,
+        }
+
+    def _set_infinite_sphere(
+        self,
+        app: Any,
+        target: AedtTarget,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Set only the far-field infinite-sphere sampling ranges.
+
+        This is a fixed, non-code capability for the common "native E-plane 360"
+        case. It never changes geometry, materials, ports or excitation; it only
+        replaces the named Radiation field setup. A new solve is required for the
+        new angles, so the response explicitly says so.
+        """
+        name = _optional_text(arguments, "name") or "InfiniteSphere"
+        if any(char in name for char in "\\/:*?\"<>|"):
+            raise BackendCommandError("infinite sphere name contains an invalid character")
+        try:
+            theta_start = float(arguments.get("theta_start", 0.0))
+            theta_stop = float(arguments.get("theta_stop", 180.0))
+            theta_step = float(arguments.get("theta_step", 10.0))
+            phi_start = float(arguments.get("phi_start", 0.0))
+            phi_stop = float(arguments.get("phi_stop", 360.0))
+            phi_step = float(arguments.get("phi_step", 10.0))
+        except (TypeError, ValueError) as exc:
+            raise BackendCommandError("infinite-sphere ranges and steps must be numbers") from exc
+        if not (-180.0 <= theta_start < theta_stop <= 180.0):
+            raise BackendCommandError("theta range must satisfy -180 <= start < stop <= 180")
+        if not (0.0 <= phi_start < phi_stop <= 360.0):
+            raise BackendCommandError("phi range must satisfy 0 <= start < stop <= 360")
+        for label, step in (("theta_step", theta_step), ("phi_step", phi_step)):
+            if not (0.5 <= step <= 30.0):
+                raise BackendCommandError("%s must be between 0.5 and 30 degrees" % label)
+        design = getattr(app, "odesign", None)
+        if design is None:
+            raise BackendCommandError("design object is unavailable")
+        try:
+            radiation = design.GetChildObject("Radiation")
+            existing = radiation.GetChildObject(name) if radiation is not None else None
+            if existing is not None:
+                existing.Delete()
+        except Exception:  # noqa: BLE001 - no existing sphere is a normal case
+            pass
+        sphere = app.insert_infinite_sphere(
+            name=name,
+            theta_start=theta_start,
+            theta_stop=theta_stop,
+            theta_step=theta_step,
+            phi_start=phi_start,
+            phi_stop=phi_stop,
+            phi_step=phi_step,
+        )
+        return {
+            "target": _target_dict(target),
+            "project_name": getattr(app, "project_name", None),
+            "design_name": getattr(app, "design_name", None),
+            "name": name,
+            "theta_start": theta_start,
+            "theta_stop": theta_stop,
+            "theta_step": theta_step,
+            "phi_start": phi_start,
+            "phi_stop": phi_stop,
+            "phi_step": phi_step,
+            "field_setup_created": bool(sphere),
+            "requires_resolve": True,
+            "geometry_changed": False,
+            "note": "Only the far-field sampling sphere changed; re-solve before exporting far fields.",
         }
 
     def _export_report_image(

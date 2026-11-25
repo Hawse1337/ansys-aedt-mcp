@@ -21,7 +21,9 @@ Approval is **not** for:
 
 The following fixed tools are zero-approval:
 
-- `export_report_image` (3D / E / H; `report_name` for saved reports);
+- `export_report_image` (3D / E / H; `report_name` for saved reports; custom
+  `report_specs` / `overlay_specs`);
+- `set_infinite_sphere` (far-field sampling ranges only; requires a new solve);
 - `export_farfield_report` (CSV cuts);
 - `screenshot` (model view);
 - `run_approved_builder` with parameters already in the schema.
@@ -133,26 +135,33 @@ running
 Do not use goal auto-rounds as an approval poller. A pending approval is a
 checkpoint, not a reason to consume rounds or ask the operator to close windows.
 
-## 7. Measurement/report sampling is a one-time schema approval
+## 7. Far-field sphere sampling is a fixed tool, not a builder approval
 
-A true 5° native pattern is not an export-only operation: the HFSS infinite
-sphere (far-field sampling) must be created with that step before the solve.
-When the approved builder does not expose the sampling step, the first request to
-add it (for example `ff_step_deg`) is a builder capability change and needs
-approval.
+Changing the HFSS infinite-sphere sampling range/step is **not** a builder
+capability change. Use the fixed tool:
 
-After that one approval:
+```python
+set_infinite_sphere(
+    project_path=...,
+    design_name=...,
+    theta_start=-180,
+    theta_stop=180,
+    theta_step=5,
+    phi_start=0,
+    phi_stop=360,
+    phi_step=5,
+    pid=...,
+)
+```
 
-- changing `ff_step_deg` from 10 to 5 (or another allowed value) is a normal
-  parameter run and must **not** request a new approval;
-- `export_report_image`/`export_farfield_report` do not require approval for
-  exporting an existing report or a newly created 3D/E/H plot;
-- a fixed report export cannot invent 5° data from a 10° solved sphere. The
-  model must be solved with the desired native sampling.
+It changes only the named Radiation field setup (geometry, ports, materials,
+excitations and solve setup are untouched), needs no builder/allowlist approval,
+and reports `requires_resolve=true`. The model must be re-solved after the
+change; a fixed report export cannot invent angles that were not solved.
 
-Agents should consolidate measurement parameters into one schema request and then
-reuse the approved builder for value changes. They must not create a new
-candidate script for every sampling value.
+Use builder approval only when the builder script itself changes (geometry, port
+behaviour, or new code). Do not add a new builder parameter just to widen or
+shift the far-field sampling sphere.
 
 ## 8. Approval churn: stop using production builder as a dev branch
 

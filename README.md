@@ -186,6 +186,29 @@ the temporary reports. It never rebuilds, solves, saves or changes geometry.
 No builder/allowlist approval is required. Up to 25 specs per call; report
 names must be safe filenames.
 
+### Far-field sphere ranges (no approval)
+
+Changing the native infinite-sphere sampling range is a fixed, non-code tool:
+
+```python
+set_infinite_sphere(
+    project_path=...,
+    design_name="Trunc_10GHz",
+    theta_start=-180,
+    theta_stop=180,
+    theta_step=5,
+    phi_start=0,
+    phi_stop=360,
+    phi_step=5,
+    port=59543,
+)
+```
+
+`theta_start=-180` / `theta_stop=180` enables a native full-360 E-plane report.
+The tool replaces only the named `Radiation/InfiniteSphere` field setup. It
+reports `requires_resolve=true`; run the solve again before exporting far fields.
+This is zero-approval and does not require editing a builder.
+
 ## Verification
 
 - Offline suite: **494 passed, 118 subtests**.
@@ -390,6 +413,29 @@ the temporary reports. It never rebuilds, solves, saves or changes geometry.
 No builder/allowlist approval is required. Up to 25 specs per call; report
 names must be safe filenames.
 
+### Far-field sphere ranges (no approval)
+
+Changing the native infinite-sphere sampling range is a fixed, non-code tool:
+
+```python
+set_infinite_sphere(
+    project_path=...,
+    design_name="Trunc_10GHz",
+    theta_start=-180,
+    theta_stop=180,
+    theta_step=5,
+    phi_start=0,
+    phi_stop=360,
+    phi_step=5,
+    port=59543,
+)
+```
+
+`theta_start=-180` / `theta_stop=180` enables a native full-360 E-plane report.
+The tool replaces only the named `Radiation/InfiniteSphere` field setup. It
+reports `requires_resolve=true`; run the solve again before exporting far fields.
+This is zero-approval and does not require editing a builder.
+
 ## Verification
 
 ```powershell
@@ -467,6 +513,29 @@ the temporary reports. It never rebuilds, solves, saves or changes geometry.
 No builder/allowlist approval is required. Up to 25 specs per call; report
 names must be safe filenames.
 
+### Far-field sphere ranges (no approval)
+
+Changing the native infinite-sphere sampling range is a fixed, non-code tool:
+
+```python
+set_infinite_sphere(
+    project_path=...,
+    design_name="Trunc_10GHz",
+    theta_start=-180,
+    theta_stop=180,
+    theta_step=5,
+    phi_start=0,
+    phi_stop=360,
+    phi_step=5,
+    port=59543,
+)
+```
+
+`theta_start=-180` / `theta_stop=180` enables a native full-360 E-plane report.
+The tool replaces only the named `Radiation/InfiniteSphere` field setup. It
+reports `requires_resolve=true`; run the solve again before exporting far fields.
+This is zero-approval and does not require editing a builder.
+
 ## Verification
 
 ```powershell
@@ -475,6 +544,7 @@ names must be safe filenames.
 ```
 
 Live acceptance covers explicit PID and port targeting, repeated commands on one broker, disposable HFSS project save, and normal AEDT close while the broker is still connected. It fails if the "being used by another application, script or extension wizard" dialog appears.
+
 
 
 

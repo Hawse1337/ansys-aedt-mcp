@@ -1572,6 +1572,63 @@ async def export_farfield_report(
 
 
 @mcp.tool()
+async def set_infinite_sphere(
+    project_path: str,
+    design_name: str,
+    name: str = "InfiniteSphere",
+    theta_start: float = 0.0,
+    theta_stop: float = 180.0,
+    theta_step: float = 10.0,
+    phi_start: float = 0.0,
+    phi_stop: float = 360.0,
+    phi_step: float = 10.0,
+    pid: int | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Set only the far-field infinite-sphere sampling ranges.
+
+    This is the fixed, non-code way to obtain a native 360-degree E-plane setup
+    (for example ``theta_start=-180, theta_stop=180, theta_step=5``) without
+    changing a builder script and without an approval request. It replaces only
+    the named Radiation/infinite-sphere field setup; geometry, materials, ports,
+    excitations and the solve setup are untouched. The new angles require a new
+    solve before far-field export. The tool never uses arbitrary Python code.
+    """
+    _reject_guard_state_path(project_path, "project path")
+    if (pid is None) == (port is None):
+        raise ValueError("infinite-sphere setup needs exactly one explicit AEDT pid or grpc port")
+    opened = await _worker_call(
+        "open_project",
+        pid=pid,
+        port=port,
+        arguments={"project_path": project_path, "design_name": design_name},
+        timeout=timeout if timeout is not None else 600.0,
+    )
+    if not isinstance(opened, dict) or opened.get("opened") is False:
+        return {"configured": False, "open_result": opened}
+    result = await _worker_call(
+        "set_infinite_sphere",
+        pid=pid,
+        port=port,
+        arguments={
+            "project_name": project_path,
+            "design_name": design_name,
+            "name": name,
+            "theta_start": theta_start,
+            "theta_stop": theta_stop,
+            "theta_step": theta_step,
+            "phi_start": phi_start,
+            "phi_stop": phi_stop,
+            "phi_step": phi_step,
+        },
+        timeout=timeout if timeout is not None else 600.0,
+    )
+    result["configured"] = bool(result.get("field_setup_created", True))
+    return result
+
+
+@mcp.tool()
 async def export_report_image(
     project_path: str,
     design_name: str,

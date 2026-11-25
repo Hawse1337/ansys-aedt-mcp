@@ -94,12 +94,13 @@ class OfficialMcpToolTests(unittest.IsolatedAsyncioTestCase):
             "run_python_script",
             "save_project",
             "screenshot",
+            "set_infinite_sphere",
             "validate_design",
         }
         registered = {tool.name for tool in await mcp_server.mcp.list_tools()}
 
         self.assertTrue(expected.issubset(registered))
-        self.assertEqual(len(registered), 67)  # + request/wait approval, export_report_image
+        self.assertEqual(len(registered), 68)  # + request/wait approval, report image, sphere setup
 
     async def test_targeted_status_and_connect_use_explicit_target(self):
         status = await mcp_server.check_aedt_status(pid=101)

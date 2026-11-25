@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from aedt_target import AedtTarget
 from pyaedt_backend import PyAedtBackend
@@ -166,6 +167,44 @@ def test_export_saved_report_preserves_operator_report(tmp_path: Path):
     assert result["files"]["Gain Plot1"]["exists"] is True
     assert post.created == []
     assert post.deleted == []
+
+
+def test_set_infinite_sphere_changes_only_field_setup():
+    existing = SimpleNamespace(Delete=Mock())
+    radiation = SimpleNamespace(GetChildObject=Mock(return_value=existing))
+    design = SimpleNamespace(GetChildObject=Mock(return_value=radiation))
+    app = SimpleNamespace(
+        odesign=design,
+        insert_infinite_sphere=Mock(return_value=object()),
+        project_name="p",
+        design_name="d",
+    )
+    backend = object.__new__(PyAedtBackend)
+    result = backend._set_infinite_sphere(
+        app,
+        AedtTarget("port", 12345),
+        {
+            "name": "InfiniteSphere",
+            "theta_start": -180,
+            "theta_stop": 180,
+            "theta_step": 5,
+            "phi_start": 0,
+            "phi_stop": 360,
+            "phi_step": 5,
+        },
+    )
+    existing.Delete.assert_called_once()
+    app.insert_infinite_sphere.assert_called_once_with(
+        name="InfiniteSphere",
+        theta_start=-180.0,
+        theta_stop=180.0,
+        theta_step=5.0,
+        phi_start=0.0,
+        phi_stop=360.0,
+        phi_step=5.0,
+    )
+    assert result["geometry_changed"] is False
+    assert result["requires_resolve"] is True
 
 
 def test_export_report_image_rejects_unknown_plot(tmp_path: Path):
