@@ -1664,6 +1664,7 @@ async def export_report_image(
     plots: list[str] | None = None,
     report_name: str | None = None,
     report_specs: list[dict[str, Any]] | None = None,
+    keep_report: bool = False,
     width: int = 1600,
     height: int = 1200,
     pid: int | None = None,
@@ -1693,6 +1694,12 @@ async def export_report_image(
     its trace data is copied with native ``CopyTracesData`` and pasted into the
     base report with ``PasteTraces``. This permits a single native report image
     with traces that use different primary sweeps (E-plane Theta + H-plane Phi).
+
+    ``keep_report=True`` keeps the created report after export and returns its
+    name under ``kept_report``. Save the project, reopen it and export that saved
+    report by ``report_name`` to clear AEDT's pasted-trace selection highlight;
+    without the reopen the live base trace can be rendered dimmer than the
+    imported trace in non-graphical exports.
     """
     _reject_guard_state_path(project_path, "project path")
     _reject_guard_state_path(output_dir, "report image output")
@@ -1720,6 +1727,7 @@ async def export_report_image(
             "plots": plots,
             "report_name": report_name or "",
             "report_specs": report_specs,
+            "keep_report": keep_report,
             "width": width,
             "height": height,
         },

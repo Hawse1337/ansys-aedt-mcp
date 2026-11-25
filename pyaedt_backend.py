@@ -1379,6 +1379,7 @@ class PyAedtBackend:
         if post is None:
             raise BackendCommandError("report-image export unavailable (no post processor)")
         raw_specs = arguments.get("report_specs")
+        keep_report = bool(arguments.get("keep_report", False))
         if raw_specs:
             if not isinstance(raw_specs, (list, tuple)) or len(raw_specs) > 25:
                 raise BackendCommandError("report_specs must be a list of at most 25 objects")
@@ -1501,7 +1502,8 @@ class PyAedtBackend:
                     finally:
                         for overlay_name in overlay_names:
                             _drop_report(post, overlay_name)
-                        _drop_report(post, actual_report_name)
+                        if not keep_report:
+                            _drop_report(post, actual_report_name)
                     files_custom[name] = {
                         "path": str(target_path),
                         "exists": target_path.is_file(),
@@ -1510,6 +1512,7 @@ class PyAedtBackend:
                         "overlay_count": len(overlay_specs),
                         "trace_style_applied": trace_style_applied,
                         "trace_names": trace_names,
+                        "kept_report": actual_report_name if keep_report else None,
                     }
                 except Exception as exc:  # noqa: BLE001 - report each custom spec
                     errors_custom.append(

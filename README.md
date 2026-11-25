@@ -1,4 +1,4 @@
-# Ansys AEDT MCP
+﻿# Ansys AEDT MCP
 
 <p>
   <a href="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml/badge.svg"></a>
@@ -178,6 +178,24 @@ report_specs=[{
 }]
 ```
 
+#### Equal-brightness overlay: save/reopen before export
+
+`PasteTraces` leaves the imported trace selected; in non-graphical exports the
+live base trace can then look dim. To get two equally bright traces, keep the
+report, save the project, reopen it, then export the saved report by name:
+
+```python
+res = export_report_image(..., report_specs=[...], keep_report=True)
+report_name = res["files"]["EH_native_overlay"]["kept_report"]
+save_project(...)
+disconnect_from_aedt(close_desktop=True, ...)
+launch_aedt(...)
+open_project(...)
+export_report_image(..., report_name=report_name, ...)
+```
+
+No re-solve is needed; the report is native and both traces are drawn normally
+after the reopen.
 The base report keeps its live trace; each overlay is copied with
 `CopyTracesData` and pasted with `PasteTraces`, so the exported JPG contains
 both curves in one native AEDT report. Temporary reports are deleted afterwards.
@@ -377,6 +395,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\remove_legacy
 ```
 
 Live acceptance covers explicit PID and port targeting, repeated commands on one broker, disposable HFSS project save, and normal AEDT close while the broker is still connected. It fails if the "being used by another application, script or extension wizard" dialog appears.
+
 
 
 
