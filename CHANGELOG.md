@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Attach by port no longer passes a version.** `Desktop`/`Hfss` construction for an already
+  verified managed session now lets PyAEDT discover the version from the target port. This fixes
+  the spurious `The version specified (2026.1) doesn't correspond to the pid specified` error that
+  blocked `open_project` and `export_report_image`; stale-lock clearing is still required when a
+  crashed process left `.aedt.lock` behind. Verified live by opening the phase-2 full-model project
+  and exporting native 3D/E/H images.
 - **First registration of new builders.** `request_builder_approval` now accepts
   `request_type="new_builder"` with complete `new_params`, absolute `output_roots`, optional
   `targets` and an entrypoint. The operator GUI creates the allowlist entry only after approval;

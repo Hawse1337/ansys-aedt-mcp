@@ -193,11 +193,14 @@ def fake_vendor_module():
     module.launch_aedt = launch
     class Desktop:
         def __init__(self, **kwargs):
+            module.last_desktop_kwargs = dict(kwargs)
             self.new_desktop = kwargs['new_desktop']
             self.port = kwargs.get('port', 50051)
             self.is_grpc_api = True
             self.aedt_process_id = 12345
-            self.aedt_version_id = kwargs['version']
+            # Attach-only factory deliberately lets PyAEDT discover the version;
+            # a fake desktop must still expose one for the guard's post-check.
+            self.aedt_version_id = kwargs.get('version', '2026.1')
             self.check_starting_mode()
             self._validate_port()
             self._Desktop__initialize(False)
@@ -248,6 +251,7 @@ class AttachOnlyRegressionTests(unittest.TestCase):
         self.assertEqual(result.aedt_process_id,12345)
         self.assertEqual(result.port,50051)
         self.assertEqual(module.launches,0)
+        self.assertNotIn("version", module.last_desktop_kwargs)
         self.assertIs(module.Desktop._validate_port,original)
 
     def test_all_audited_fallback_entries_refuse_and_restore_after_exception(self):

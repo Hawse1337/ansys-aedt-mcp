@@ -321,7 +321,11 @@ def _default_desktop_factory(**kwargs: Any) -> Any:
             # PyAEDT 1.10 rejects version+PID together (and PID-only needs a version). Attaching
             # by the verified gRPC port avoids both failure modes; the PID is still verified above
             # and below, and _attach_only_desktop keeps the session explicit.
+            # Let PyAEDT discover the version from the already-running session. Passing the
+            # guard's version string as well raises the spurious
+            # "version specified ... doesn't correspond to the pid" error on some 2026.1 builds.
             vendor_kwargs.pop("aedt_process_id", None)
+            vendor_kwargs.pop("version", None)
             vendor_kwargs["port"] = expected_port
             vendor_kwargs["machine"] = vendor_kwargs.get("machine") or "localhost"
         if configured_port is not None:
@@ -362,6 +366,9 @@ def _default_hfss_factory(**kwargs: Any) -> Any:
         raise BackendCommandError("gRPC port must be a positive integer")
     vendor_kwargs = dict(kwargs)
     vendor_kwargs.pop("aedt_process_id", None)
+    # Attach by port and let PyAEDT discover the version; version+port can raise the
+    # spurious "version specified ... doesn't correspond to the pid" error.
+    vendor_kwargs.pop("version", None)
     vendor_kwargs.update({"machine": "localhost", "port": expected_port})
     module = _audited_desktop_module()
     with _attach_only_desktop(
