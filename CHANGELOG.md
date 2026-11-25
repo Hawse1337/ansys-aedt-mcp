@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.1 - 2026-11-25
 
 - **`abort_analysis` is now exposed as an MCP tool.** Agents can stop a running solve on an
   explicit target with a clean stop; it changes no geometry, setup or report.

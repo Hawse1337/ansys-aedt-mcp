@@ -1,4 +1,4 @@
-﻿# Ansys AEDT MCP
+# Ansys AEDT MCP
 
 <p>
   <a href="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml"><img alt="tests" src="https://github.com/Hawse1337/ansys-aedt-mcp/actions/workflows/ci.yml/badge.svg"></a>
@@ -230,14 +230,14 @@ This is zero-approval and does not require editing a builder.
 
 ## Verification
 
-- Offline suite: **494 passed, 118 subtests**.
+- Offline suite: **525 passed, 1 skipped, 118 subtests**.
 - Approved-builder workflow: [docs/BUILDERS.md](docs/BUILDERS.md).
 - Live on AEDT 2026 R1 / PyAEDT 1.10.0: unmanaged attach refused, guard-launched session
   `managed: true`, `run_python_code` refused.
 - Releases and the hardened package are published at:
   https://github.com/Hawse1337/pyaedt-mcp-hardening-kit/releases
 
-## Enforcement boundary (v1.6.0)
+## Enforcement boundary (v1.6.1)
 
 Guard-launched AEDT sessions are recorded and only those sessions can be attached through
 the guard. `guard_status` lists every live `ansysedt.exe` as managed or unmanaged, and every
@@ -377,7 +377,7 @@ before the solve. `export_report_image` never saves the project or changes geome
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-Current offline record: **519 passed, 1 skipped, 118 subtests** (2026-11-24). Live AEDT acceptance
+Current offline record: **525 passed, 1 skipped, 118 subtests** (2026-11-25). Live AEDT acceptance
 remains separate; an API success is submission evidence, not convergence proof.
 ## Remove Legacy Toolbar
 
