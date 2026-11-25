@@ -1247,6 +1247,87 @@ class PyAedtBackend:
         post = getattr(app, "post", None)
         if post is None:
             raise BackendCommandError("report-image export unavailable (no post processor)")
+        raw_specs = arguments.get("report_specs")
+        if raw_specs:
+            if not isinstance(raw_specs, (list, tuple)) or len(raw_specs) > 25:
+                raise BackendCommandError("report_specs must be a list of at most 25 objects")
+            files_custom: dict[str, Any] = {}
+            errors_custom: list[str] = []
+            for index, spec in enumerate(raw_specs):
+                if not isinstance(spec, Mapping):
+                    errors_custom.append("report_specs[%d] is not an object" % index)
+                    continue
+                name = _optional_text(spec, "name")
+                if not name or any(char in name for char in "\\/:*?\"<>|"):
+                    errors_custom.append("report_specs[%d] has an invalid name" % index)
+                    continue
+                try:
+                    expressions = spec.get("expressions")
+                    if isinstance(expressions, str):
+                        expressions = [expressions]
+                    if (not isinstance(expressions, list) or not expressions
+                            or any(not isinstance(item, str) or not item.strip()
+                                   for item in expressions)):
+                        raise BackendCommandError("expressions must be a non-empty string list")
+                    primary = _optional_text(spec, "primary_sweep_variable")
+                    plot_type = _optional_text(spec, "plot_type")
+                    if not primary or not plot_type:
+                        raise BackendCommandError(
+                            "primary_sweep_variable and plot_type are required"
+                        )
+                    kwargs: dict[str, Any] = {
+                        "expressions": expressions,
+                        "setup_sweep_name": _optional_text(spec, "setup_sweep_name")
+                        or ("%s : LastAdaptive" % setup_name),
+                        "variations": dict(spec.get("variations") or {}),
+                        "primary_sweep_variable": primary,
+                        "report_category": _optional_text(spec, "report_category")
+                        or "Far Fields",
+                        "plot_type": plot_type,
+                        "plot_name": name,
+                        "show": False,
+                    }
+                    context = _optional_text(spec, "context")
+                    if context:
+                        kwargs["context"] = context
+                    secondary = _optional_text(spec, "secondary_sweep_variable")
+                    if secondary:
+                        kwargs["secondary_sweep_variable"] = secondary
+                    rep = post.create_report(**kwargs)
+                    if not rep:
+                        raise BackendCommandError("create_report returned False")
+                    actual_report_name = _resolve_report_name(rep)
+                    target_path = out_dir / (name + ".jpg")
+                    exported = post.export_report_to_jpg(
+                        str(out_dir) + "\\", actual_report_name,
+                        width=width, height=height, image_format="jpg",
+                    )
+                    _drop_report(post, actual_report_name)
+                    files_custom[name] = {
+                        "path": str(target_path),
+                        "exists": target_path.is_file(),
+                        "export_returned": str(exported)[:300],
+                        "report_name": actual_report_name,
+                    }
+                except Exception as exc:  # noqa: BLE001 - report each custom spec
+                    errors_custom.append(
+                        "%s: %s: %s" % (name or "spec_%d" % index,
+                                        type(exc).__name__, str(exc)[:300])
+                    )
+            if not files_custom:
+                raise BackendCommandError(
+                    "no custom report image was exported; errors: %s"
+                    % "; ".join(errors_custom)[:1000]
+                )
+            return {
+                "target": _target_dict(target),
+                "project_name": getattr(app, "project_name", None),
+                "design_name": getattr(app, "design_name", None),
+                "report_specs": list(raw_specs),
+                "files": files_custom,
+                "errors": errors_custom,
+                "read_only": True,
+            }
         # Preferred path: export an already-saved native report, preserving the
         # operator's 5-degree sampling, dual traces, legend and axes exactly.
         report_name = _optional_text(arguments, "report_name")

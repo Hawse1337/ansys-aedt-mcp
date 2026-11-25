@@ -125,6 +125,35 @@ schema completeness, declared-parameter shape, static risk) and can be waited on
 `wait_for_builder_approval` instead of polling. Optional per-builder daily budgets prevent
 approval churn. See [docs/APPROVAL_POLICY.md](docs/APPROVAL_POLICY.md).
 
+### Custom native report specs (read-only)
+
+For report types beyond the fixed 3D/E/H templates, pass `report_specs` to
+`export_report_image`. Each entry supplies the AEDT report fields directly:
+
+```python
+export_report_image(
+    project_path=...,
+    design_name="Trunc_10GHz",
+    output_dir=...,
+    port=59543,
+    report_specs=[{
+        "name": "E_full_360",
+        "expressions": ["dB(GainTotal)"],
+        "report_category": "Far Fields",
+        "plot_type": "Radiation Pattern",
+        "setup_sweep_name": "Setup1 : LastAdaptive",
+        "variations": {"Freq": ["10GHz"], "Phi": ["0deg", "180deg"], "Theta": ["All"]},
+        "primary_sweep_variable": "Theta",
+        "context": "InfiniteSphere",
+    }],
+)
+```
+
+This is still read-only: it creates native reports, exports JPGs, and removes
+the temporary reports. It never rebuilds, solves, saves or changes geometry.
+No builder/allowlist approval is required. Up to 25 specs per call; report
+names must be safe filenames.
+
 ## Verification
 
 - Offline suite: **494 passed, 118 subtests**.
@@ -268,6 +297,35 @@ report by `report_name` or create native 3D / E-plane / H-plane images. It canno
 solved far-field data into true 5-degree data; the builder's infinite-sphere sampling must be set
 before the solve. `export_report_image` never saves the project or changes geometry.
 
+### Custom native report specs (read-only)
+
+For report types beyond the fixed 3D/E/H templates, pass `report_specs` to
+`export_report_image`. Each entry supplies the AEDT report fields directly:
+
+```python
+export_report_image(
+    project_path=...,
+    design_name="Trunc_10GHz",
+    output_dir=...,
+    port=59543,
+    report_specs=[{
+        "name": "E_full_360",
+        "expressions": ["dB(GainTotal)"],
+        "report_category": "Far Fields",
+        "plot_type": "Radiation Pattern",
+        "setup_sweep_name": "Setup1 : LastAdaptive",
+        "variations": {"Freq": ["10GHz"], "Phi": ["0deg", "180deg"], "Theta": ["All"]},
+        "primary_sweep_variable": "Theta",
+        "context": "InfiniteSphere",
+    }],
+)
+```
+
+This is still read-only: it creates native reports, exports JPGs, and removes
+the temporary reports. It never rebuilds, solves, saves or changes geometry.
+No builder/allowlist approval is required. Up to 25 specs per call; report
+names must be safe filenames.
+
 ## Verification
 
 ```powershell
@@ -284,6 +342,35 @@ The old `Start AEDT MCP Bridge` and `Stop AEDT MCP Bridge` buttons are not used.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\remove_legacy_aedt_mcp_toolbar.ps1" -AedtRoot "G:\ANSYS206\ANSYS Inc\v261\AnsysEM"
 ```
 
+### Custom native report specs (read-only)
+
+For report types beyond the fixed 3D/E/H templates, pass `report_specs` to
+`export_report_image`. Each entry supplies the AEDT report fields directly:
+
+```python
+export_report_image(
+    project_path=...,
+    design_name="Trunc_10GHz",
+    output_dir=...,
+    port=59543,
+    report_specs=[{
+        "name": "E_full_360",
+        "expressions": ["dB(GainTotal)"],
+        "report_category": "Far Fields",
+        "plot_type": "Radiation Pattern",
+        "setup_sweep_name": "Setup1 : LastAdaptive",
+        "variations": {"Freq": ["10GHz"], "Phi": ["0deg", "180deg"], "Theta": ["All"]},
+        "primary_sweep_variable": "Theta",
+        "context": "InfiniteSphere",
+    }],
+)
+```
+
+This is still read-only: it creates native reports, exports JPGs, and removes
+the temporary reports. It never rebuilds, solves, saves or changes geometry.
+No builder/allowlist approval is required. Up to 25 specs per call; report
+names must be safe filenames.
+
 ## Verification
 
 ```powershell
@@ -292,6 +379,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\remove_legacy
 ```
 
 Live acceptance covers explicit PID and port targeting, repeated commands on one broker, disposable HFSS project save, and normal AEDT close while the broker is still connected. It fails if the "being used by another application, script or extension wizard" dialog appears.
+
 
 
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Custom read-only report images.** `export_report_image` now accepts `report_specs`, letting an
+  agent create arbitrary native AEDT reports (category, expressions, plot type, variations, sweep
+  variables, context) and export JPGs without builder approval or arbitrary code. Temporary reports
+  are removed after export; geometry/solve state is untouched. The fixed 3D/E/H templates remain
+  available.
 - **Attach by port no longer passes a version.** `Desktop`/`Hfss` construction for an already
   verified managed session now lets PyAEDT discover the version from the target port. This fixes
   the spurious `The version specified (2026.1) doesn't correspond to the pid specified` error that

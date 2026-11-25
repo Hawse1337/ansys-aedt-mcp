@@ -60,6 +60,48 @@ def test_export_report_image_creates_three_native_reports(tmp_path: Path):
     assert sorted(post.deleted) == ["P3D_12", "PE_12", "PH_12"]
 
 
+def test_export_custom_report_specs_keeps_native_freedom(tmp_path: Path):
+    post = _FakePost(tmp_path)
+    app = SimpleNamespace(post=post, project_name="p", design_name="d")
+    backend = object.__new__(PyAedtBackend)
+    result = backend._export_report_image(
+        app,
+        AedtTarget("port", 12345),
+        {
+            "output_dir": str(tmp_path),
+            "report_specs": [
+                {
+                    "name": "E_full_360",
+                    "expressions": ["dB(GainTotal)"],
+                    "report_category": "Far Fields",
+                    "plot_type": "Radiation Pattern",
+                    "setup_sweep_name": "Setup1 : LastAdaptive",
+                    "variations": {
+                        "Freq": ["10GHz"], "Phi": ["0deg", "180deg"], "Theta": ["All"]
+                    },
+                    "primary_sweep_variable": "Theta",
+                },
+                {
+                    "name": "H_polar",
+                    "expressions": ["dB(GainTotal)"],
+                    "plot_type": "Radiation Pattern",
+                    "variations": {
+                        "Freq": ["10GHz"], "Theta": ["90deg"], "Phi": ["All"]
+                    },
+                    "primary_sweep_variable": "Phi",
+                },
+            ],
+            "width": 800,
+            "height": 600,
+        },
+    )
+    assert result["read_only"] is True
+    assert sorted(result["files"]) == ["E_full_360", "H_polar"]
+    assert post.created[0]["variations"]["Phi"] == ["0deg", "180deg"]
+    assert post.created[1]["plot_type"] == "Radiation Pattern"
+    assert sorted(post.deleted) == ["E_full_360", "H_polar"]
+
+
 def test_export_saved_report_preserves_operator_report(tmp_path: Path):
     post = _FakePost(tmp_path)
     app = SimpleNamespace(post=post, project_name="p", design_name="d")

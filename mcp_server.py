@@ -1580,6 +1580,7 @@ async def export_report_image(
     frequency: str = "10GHz",
     plots: list[str] | None = None,
     report_name: str | None = None,
+    report_specs: list[dict[str, Any]] | None = None,
     width: int = 1600,
     height: int = 1200,
     pid: int | None = None,
@@ -1597,6 +1598,13 @@ async def export_report_image(
     Pass ``report_name`` to export an already-saved report (for example the
     operator's ``Gain Plot1`` with its 5-degree sampling, dual traces and axes)
     exactly as saved. When ``report_name`` is set, ``plots`` is ignored.
+
+    ``report_specs`` is the read-only escape hatch for native report freedom:
+    each object supplies the AEDT report fields (``name``, ``expressions``,
+    ``report_category``, ``plot_type``, ``setup_sweep_name``, ``variations``,
+    ``primary_sweep_variable``, optional ``secondary_sweep_variable`` and
+    ``context``). It creates and exports native reports without arbitrary code
+    or builder approval, then removes the temporary reports.
     """
     _reject_guard_state_path(project_path, "project path")
     _reject_guard_state_path(output_dir, "report image output")
@@ -1623,6 +1631,7 @@ async def export_report_image(
             "frequency": frequency,
             "plots": plots,
             "report_name": report_name or "",
+            "report_specs": report_specs,
             "width": width,
             "height": height,
         },
