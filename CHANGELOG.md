@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`abort_analysis` is now exposed as an MCP tool.** Agents can stop a running solve on an
+  explicit target with a clean stop; it changes no geometry, setup or report.
+- **Overlay trace styling.** `overlay_specs` now applies an explicit solid width/color palette to
+  live and pasted traces, so imported traces no longer keep AEDT's pale default style.
 - **Far-field sphere setup is now a fixed zero-approval tool.** `set_infinite_sphere` replaces
   only the named Radiation/InfiniteSphere field setup, so widening theta to -180..180 or changing
   phi/step no longer requires a builder code change or an approval request. It reports

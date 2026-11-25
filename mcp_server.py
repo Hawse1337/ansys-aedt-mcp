@@ -1473,6 +1473,30 @@ register_maxwell_tools(mcp, _worker_call)
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+async def abort_analysis(
+    project_name: str,
+    design_name: str,
+    pid: int | None = None,
+    port: int | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Stop simulations for one design on an explicit AEDT target.
+
+    This is a fixed control-plane tool: it calls PyAEDT's ``stop_simulations``
+    with a clean stop and performs no geometry, solve-setup or report changes.
+    """
+    if (pid is None) == (port is None):
+        raise ValueError("abort_analysis needs exactly one explicit AEDT pid or grpc port")
+    return await _worker_call(
+        "abort_analysis",
+        pid=pid,
+        port=port,
+        arguments={"project_name": project_name, "design_name": design_name},
+        timeout=timeout if timeout is not None else 300.0,
+    )
+
+
+@mcp.tool()
 async def preflight_design(
     project_name: str,
     design_name: str,

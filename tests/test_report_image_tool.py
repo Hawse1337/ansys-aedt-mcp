@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from aedt_target import AedtTarget
-from pyaedt_backend import PyAedtBackend
+from pyaedt_backend import PyAedtBackend, _style_report_traces
 
 
 class _FakePost:
@@ -207,6 +207,19 @@ def test_set_infinite_sphere_edits_existing_setup_without_resolve():
     assert result["geometry_changed"] is False
     assert result["requires_resolve"] is False
     assert result["far_field_data_reused"] is True
+
+
+def test_style_report_traces_makes_imported_trace_solid():
+    base = Mock()
+    imported = Mock()
+    report = SimpleNamespace(traces=[base, imported])
+    assert _style_report_traces(report, 2) is True
+    base.set_trace_properties.assert_called_once_with(
+        style="Solid", width=3, color=(0, 128, 0)
+    )
+    imported.set_trace_properties.assert_called_once_with(
+        style="Solid", width=3, color=(0, 150, 220)
+    )
 
 
 def test_export_report_image_rejects_unknown_plot(tmp_path: Path):

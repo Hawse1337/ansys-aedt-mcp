@@ -93,6 +93,34 @@ def _drop_report(post: Any, name: str) -> None:
         pass
 
 
+def _style_report_traces(report: Any, trace_count: int) -> bool:
+    """Give live and pasted/imported traces the same solid visual weight.
+
+    AEDT renders pasted static traces with its light default style; without an
+    explicit style the overlay trace looks half-transparent next to the live
+    trace.  Keep a distinguishable palette but set every trace to the same
+    solid width so both curves are equally readable.
+    """
+    colors = [(0, 128, 0), (0, 150, 220), (210, 70, 45), (120, 80, 200)]
+    try:
+        traces = list(getattr(report, "traces", []) or [])
+    except Exception:  # noqa: BLE001 - styling is best-effort
+        return False
+    if not traces:
+        return False
+    applied = False
+    for index, trace in enumerate(traces):
+        setter = getattr(trace, "set_trace_properties", None)
+        if not callable(setter):
+            continue
+        try:
+            setter(style="Solid", width=3, color=colors[index % len(colors)])
+            applied = True
+        except Exception:  # noqa: BLE001 - keep exporting even if styling fails
+            continue
+    return applied
+
+
 def _resolve_report_name(report: Any) -> str:
     """Return the identifier ``export_report_to_csv`` expects.
 
@@ -1414,6 +1442,19 @@ class PyAedtBackend:
                         raise BackendCommandError("create_report returned False")
                     actual_report_name = _resolve_report_name(rep)
                     overlay_names: list[str] = []
+                    # Style the live base trace before pasting; some AEDT builds do
+                    # not expose the original live trace in rep.traces after PasteTraces.
+                    if overlay_specs:
+                        # A first export initializes AEDT's report trace tree so the
+                        # live trace is styleable before the imported trace is pasted.
+                        try:
+                            post.export_report_to_jpg(
+                                str(out_dir) + "\\", actual_report_name,
+                                width=width, height=height, image_format="jpg",
+                            )
+                        except Exception:  # noqa: BLE001 - warm-up is best-effort
+                            pass
+                        _style_report_traces(rep, 1)
                     try:
                         for overlay_index, overlay in enumerate(overlay_specs):
                             overlay_name = _optional_text(overlay, "name")
@@ -1446,6 +1487,13 @@ class PyAedtBackend:
                                 list(overlay_kwargs["expressions"]),
                             )
                             report_setup.PasteTraces(actual_report_name)
+                        trace_style_applied = _style_report_traces(
+                            rep, len(overlay_specs) + 1
+                        )
+                        trace_names = [
+                            str(getattr(trace, "name", ""))
+                            for trace in list(getattr(rep, "traces", []) or [])
+                        ]
                         target_path = out_dir / (name + ".jpg")
                         exported = post.export_report_to_jpg(
                             str(out_dir) + "\\", actual_report_name,
@@ -1461,6 +1509,8 @@ class PyAedtBackend:
                         "export_returned": str(exported)[:300],
                         "report_name": actual_report_name,
                         "overlay_count": len(overlay_specs),
+                        "trace_style_applied": trace_style_applied,
+                        "trace_names": trace_names,
                     }
                 except Exception as exc:  # noqa: BLE001 - report each custom spec
                     errors_custom.append(
