@@ -15,6 +15,18 @@ class _FakePost:
         self.outdir = outdir
         self.created = []
         self.deleted = []
+        self.copied = []
+        self.pasted = []
+        self.oreportsetup = SimpleNamespace(
+            CopyTracesData=self._copy_traces,
+            PasteTraces=self._paste_traces,
+        )
+
+    def _copy_traces(self, report_name, traces):
+        self.copied.append((report_name, list(traces)))
+
+    def _paste_traces(self, report_name):
+        self.pasted.append(report_name)
 
     def create_report(self, **kwargs):
         self.created.append(kwargs)
@@ -100,6 +112,40 @@ def test_export_custom_report_specs_keeps_native_freedom(tmp_path: Path):
     assert post.created[0]["variations"]["Phi"] == ["0deg", "180deg"]
     assert post.created[1]["plot_type"] == "Radiation Pattern"
     assert sorted(post.deleted) == ["E_full_360", "H_polar"]
+
+
+def test_export_overlay_specs_copies_trace_data_into_base_report(tmp_path: Path):
+    post = _FakePost(tmp_path)
+    app = SimpleNamespace(post=post, project_name="p", design_name="d")
+    backend = object.__new__(PyAedtBackend)
+    result = backend._export_report_image(
+        app,
+        AedtTarget("port", 12345),
+        {
+            "output_dir": str(tmp_path),
+            "report_specs": [{
+                "name": "EH_native_overlay",
+                "expressions": ["dB(GainTotal)"],
+                "plot_type": "Radiation Pattern",
+                "variations": {"Freq": ["10GHz"], "Phi": ["0deg"], "Theta": ["All"]},
+                "primary_sweep_variable": "Theta",
+                "context": "InfiniteSphere",
+                "overlay_specs": [{
+                    "name": "EH_native_overlay_H",
+                    "expressions": ["dB(GainTotal)"],
+                    "plot_type": "Radiation Pattern",
+                    "variations": {"Freq": ["10GHz"], "Theta": ["90deg"], "Phi": ["All"]},
+                    "primary_sweep_variable": "Phi",
+                    "context": "InfiniteSphere",
+                }],
+            }],
+        },
+    )
+    assert result["files"]["EH_native_overlay"]["overlay_count"] == 1
+    assert post.copied == [("EH_native_overlay_H", ["dB(GainTotal)"])]
+    assert post.pasted == ["EH_native_overlay"]
+    assert "EH_native_overlay" in post.created[0]["plot_name"]
+    assert sorted(post.deleted) == ["EH_native_overlay", "EH_native_overlay_H"]
 
 
 def test_export_saved_report_preserves_operator_report(tmp_path: Path):

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Native trace overlays.** `report_specs` now accepts `overlay_specs`: the guard creates the
+  source report, uses AEDT's native `CopyTracesData` + `PasteTraces` to paste its trace data as a
+  static trace into the base report, then exports the base JPG. This combines traces whose primary
+  sweeps differ (for example E-plane `Theta` and H-plane `Phi`) in one native AEDT report. Verified
+  live on the phase-2 full model at 10 GHz; temporary reports are removed afterwards.
 - **Custom read-only report images.** `export_report_image` now accepts `report_specs`, letting an
   agent create arbitrary native AEDT reports (category, expressions, plot type, variations, sweep
   variables, context) and export JPGs without builder approval or arbitrary code. Temporary reports

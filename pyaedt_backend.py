@@ -1253,6 +1253,41 @@ class PyAedtBackend:
                 raise BackendCommandError("report_specs must be a list of at most 25 objects")
             files_custom: dict[str, Any] = {}
             errors_custom: list[str] = []
+
+            def _custom_kwargs(item: Mapping[str, Any], report_name: str) -> dict[str, Any]:
+                expressions = item.get("expressions")
+                if isinstance(expressions, str):
+                    expressions = [expressions]
+                if (not isinstance(expressions, list) or not expressions
+                        or any(not isinstance(expr, str) or not expr.strip()
+                               for expr in expressions)):
+                    raise BackendCommandError("expressions must be a non-empty string list")
+                primary = _optional_text(item, "primary_sweep_variable")
+                plot_type = _optional_text(item, "plot_type")
+                if not primary or not plot_type:
+                    raise BackendCommandError(
+                        "primary_sweep_variable and plot_type are required"
+                    )
+                values: dict[str, Any] = {
+                    "expressions": expressions,
+                    "setup_sweep_name": _optional_text(item, "setup_sweep_name")
+                    or ("%s : LastAdaptive" % setup_name),
+                    "variations": dict(item.get("variations") or {}),
+                    "primary_sweep_variable": primary,
+                    "report_category": _optional_text(item, "report_category")
+                    or "Far Fields",
+                    "plot_type": plot_type,
+                    "plot_name": report_name,
+                    "show": False,
+                }
+                context = _optional_text(item, "context")
+                if context:
+                    values["context"] = context
+                secondary = _optional_text(item, "secondary_sweep_variable")
+                if secondary:
+                    values["secondary_sweep_variable"] = secondary
+                return values
+
             for index, spec in enumerate(raw_specs):
                 if not isinstance(spec, Mapping):
                     errors_custom.append("report_specs[%d] is not an object" % index)
@@ -1262,52 +1297,67 @@ class PyAedtBackend:
                     errors_custom.append("report_specs[%d] has an invalid name" % index)
                     continue
                 try:
-                    expressions = spec.get("expressions")
-                    if isinstance(expressions, str):
-                        expressions = [expressions]
-                    if (not isinstance(expressions, list) or not expressions
-                            or any(not isinstance(item, str) or not item.strip()
-                                   for item in expressions)):
-                        raise BackendCommandError("expressions must be a non-empty string list")
-                    primary = _optional_text(spec, "primary_sweep_variable")
-                    plot_type = _optional_text(spec, "plot_type")
-                    if not primary or not plot_type:
-                        raise BackendCommandError(
-                            "primary_sweep_variable and plot_type are required"
-                        )
-                    kwargs: dict[str, Any] = {
-                        "expressions": expressions,
-                        "setup_sweep_name": _optional_text(spec, "setup_sweep_name")
-                        or ("%s : LastAdaptive" % setup_name),
-                        "variations": dict(spec.get("variations") or {}),
-                        "primary_sweep_variable": primary,
-                        "report_category": _optional_text(spec, "report_category")
-                        or "Far Fields",
-                        "plot_type": plot_type,
-                        "plot_name": name,
-                        "show": False,
-                    }
-                    context = _optional_text(spec, "context")
-                    if context:
-                        kwargs["context"] = context
-                    secondary = _optional_text(spec, "secondary_sweep_variable")
-                    if secondary:
-                        kwargs["secondary_sweep_variable"] = secondary
+                    overlay_specs = spec.get("overlay_specs") or []
+                    if not isinstance(overlay_specs, (list, tuple)) or len(overlay_specs) > 5:
+                        raise BackendCommandError("overlay_specs must be a list of at most 5 objects")
+                    for overlay_index, overlay in enumerate(overlay_specs):
+                        if not isinstance(overlay, Mapping):
+                            raise BackendCommandError(
+                                "overlay_specs[%d] is not an object" % overlay_index
+                            )
+                    kwargs = _custom_kwargs(spec, name)
                     rep = post.create_report(**kwargs)
                     if not rep:
                         raise BackendCommandError("create_report returned False")
                     actual_report_name = _resolve_report_name(rep)
-                    target_path = out_dir / (name + ".jpg")
-                    exported = post.export_report_to_jpg(
-                        str(out_dir) + "\\", actual_report_name,
-                        width=width, height=height, image_format="jpg",
-                    )
-                    _drop_report(post, actual_report_name)
+                    overlay_names: list[str] = []
+                    try:
+                        for overlay_index, overlay in enumerate(overlay_specs):
+                            overlay_name = _optional_text(overlay, "name")
+                            if (not overlay_name
+                                    or any(char in overlay_name for char in "\\/:*?\"<>|")):
+                                raise BackendCommandError(
+                                    "overlay_specs[%d] has an invalid name" % overlay_index
+                                )
+                            overlay_kwargs = _custom_kwargs(overlay, overlay_name)
+                            overlay_rep = post.create_report(**overlay_kwargs)
+                            if not overlay_rep:
+                                raise BackendCommandError(
+                                    "overlay_specs[%d] create_report returned False"
+                                    % overlay_index
+                                )
+                            overlay_actual = _resolve_report_name(overlay_rep)
+                            overlay_names.append(overlay_actual)
+                            report_setup = getattr(post, "oreportsetup", None)
+                            if report_setup is None:
+                                raise BackendCommandError(
+                                    "post processor does not expose oreportsetup"
+                                )
+                            # Copy the source trace as static data and paste it into
+                            # the base report. This is the native AEDT equivalent of
+                            # "copy trace data -> paste into target report", and it
+                            # is the only way to overlay traces whose primary sweeps
+                            # differ (e.g. E-plane Theta and H-plane Phi).
+                            report_setup.CopyTracesData(
+                                overlay_actual,
+                                list(overlay_kwargs["expressions"]),
+                            )
+                            report_setup.PasteTraces(actual_report_name)
+                        target_path = out_dir / (name + ".jpg")
+                        exported = post.export_report_to_jpg(
+                            str(out_dir) + "\\", actual_report_name,
+                            width=width, height=height, image_format="jpg",
+                        )
+                    finally:
+                        for overlay_name in overlay_names:
+                            _drop_report(post, overlay_name)
+                        _drop_report(post, actual_report_name)
                     files_custom[name] = {
                         "path": str(target_path),
                         "exists": target_path.is_file(),
                         "export_returned": str(exported)[:300],
                         "report_name": actual_report_name,
+                        "overlay_count": len(overlay_specs),
                     }
                 except Exception as exc:  # noqa: BLE001 - report each custom spec
                     errors_custom.append(

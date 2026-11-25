@@ -1605,6 +1605,11 @@ async def export_report_image(
     ``primary_sweep_variable``, optional ``secondary_sweep_variable`` and
     ``context``). It creates and exports native reports without arbitrary code
     or builder approval, then removes the temporary reports.
+
+    A spec may also contain ``overlay_specs``: each overlay report is created,
+    its trace data is copied with native ``CopyTracesData`` and pasted into the
+    base report with ``PasteTraces``. This permits a single native report image
+    with traces that use different primary sweeps (E-plane Theta + H-plane Phi).
     """
     _reject_guard_state_path(project_path, "project path")
     _reject_guard_state_path(output_dir, "report image output")

@@ -149,6 +149,38 @@ export_report_image(
 )
 ```
 
+#### Native trace overlay (copy/paste trace data)
+
+AEDT can combine traces whose primary sweeps differ by copying trace data and
+pasting it as static data into the target report. The guard exposes this as
+`overlay_specs` on a report spec. For example, an H-plane Phi trace can be
+pasted into an E-plane Theta polar report:
+
+```python
+report_specs=[{
+    "name": "EH_native_overlay",
+    "expressions": ["dB(GainTotal)"],
+    "report_category": "Far Fields",
+    "plot_type": "Radiation Pattern",
+    "setup_sweep_name": "Setup1 : LastAdaptive",
+    "variations": {"Freq": ["10GHz"], "Phi": ["0deg"], "Theta": ["All"]},
+    "primary_sweep_variable": "Theta",
+    "context": "InfiniteSphere",
+    "overlay_specs": [{
+        "name": "EH_native_overlay_H",
+        "expressions": ["dB(GainTotal)"],
+        "plot_type": "Radiation Pattern",
+        "setup_sweep_name": "Setup1 : LastAdaptive",
+        "variations": {"Freq": ["10GHz"], "Theta": ["90deg"], "Phi": ["All"]},
+        "primary_sweep_variable": "Phi",
+        "context": "InfiniteSphere",
+    }],
+}]
+```
+
+The base report keeps its live trace; each overlay is copied with
+`CopyTracesData` and pasted with `PasteTraces`, so the exported JPG contains
+both curves in one native AEDT report. Temporary reports are deleted afterwards.
 This is still read-only: it creates native reports, exports JPGs, and removes
 the temporary reports. It never rebuilds, solves, saves or changes geometry.
 No builder/allowlist approval is required. Up to 25 specs per call; report
@@ -321,6 +353,38 @@ export_report_image(
 )
 ```
 
+#### Native trace overlay (copy/paste trace data)
+
+AEDT can combine traces whose primary sweeps differ by copying trace data and
+pasting it as static data into the target report. The guard exposes this as
+`overlay_specs` on a report spec. For example, an H-plane Phi trace can be
+pasted into an E-plane Theta polar report:
+
+```python
+report_specs=[{
+    "name": "EH_native_overlay",
+    "expressions": ["dB(GainTotal)"],
+    "report_category": "Far Fields",
+    "plot_type": "Radiation Pattern",
+    "setup_sweep_name": "Setup1 : LastAdaptive",
+    "variations": {"Freq": ["10GHz"], "Phi": ["0deg"], "Theta": ["All"]},
+    "primary_sweep_variable": "Theta",
+    "context": "InfiniteSphere",
+    "overlay_specs": [{
+        "name": "EH_native_overlay_H",
+        "expressions": ["dB(GainTotal)"],
+        "plot_type": "Radiation Pattern",
+        "setup_sweep_name": "Setup1 : LastAdaptive",
+        "variations": {"Freq": ["10GHz"], "Theta": ["90deg"], "Phi": ["All"]},
+        "primary_sweep_variable": "Phi",
+        "context": "InfiniteSphere",
+    }],
+}]
+```
+
+The base report keeps its live trace; each overlay is copied with
+`CopyTracesData` and pasted with `PasteTraces`, so the exported JPG contains
+both curves in one native AEDT report. Temporary reports are deleted afterwards.
 This is still read-only: it creates native reports, exports JPGs, and removes
 the temporary reports. It never rebuilds, solves, saves or changes geometry.
 No builder/allowlist approval is required. Up to 25 specs per call; report
@@ -366,6 +430,38 @@ export_report_image(
 )
 ```
 
+#### Native trace overlay (copy/paste trace data)
+
+AEDT can combine traces whose primary sweeps differ by copying trace data and
+pasting it as static data into the target report. The guard exposes this as
+`overlay_specs` on a report spec. For example, an H-plane Phi trace can be
+pasted into an E-plane Theta polar report:
+
+```python
+report_specs=[{
+    "name": "EH_native_overlay",
+    "expressions": ["dB(GainTotal)"],
+    "report_category": "Far Fields",
+    "plot_type": "Radiation Pattern",
+    "setup_sweep_name": "Setup1 : LastAdaptive",
+    "variations": {"Freq": ["10GHz"], "Phi": ["0deg"], "Theta": ["All"]},
+    "primary_sweep_variable": "Theta",
+    "context": "InfiniteSphere",
+    "overlay_specs": [{
+        "name": "EH_native_overlay_H",
+        "expressions": ["dB(GainTotal)"],
+        "plot_type": "Radiation Pattern",
+        "setup_sweep_name": "Setup1 : LastAdaptive",
+        "variations": {"Freq": ["10GHz"], "Theta": ["90deg"], "Phi": ["All"]},
+        "primary_sweep_variable": "Phi",
+        "context": "InfiniteSphere",
+    }],
+}]
+```
+
+The base report keeps its live trace; each overlay is copied with
+`CopyTracesData` and pasted with `PasteTraces`, so the exported JPG contains
+both curves in one native AEDT report. Temporary reports are deleted afterwards.
 This is still read-only: it creates native reports, exports JPGs, and removes
 the temporary reports. It never rebuilds, solves, saves or changes geometry.
 No builder/allowlist approval is required. Up to 25 specs per call; report
@@ -379,6 +475,7 @@ names must be safe filenames.
 ```
 
 Live acceptance covers explicit PID and port targeting, repeated commands on one broker, disposable HFSS project save, and normal AEDT close while the broker is still connected. It fails if the "being used by another application, script or extension wizard" dialog appears.
+
 
 
 
