@@ -1442,19 +1442,6 @@ class PyAedtBackend:
                         raise BackendCommandError("create_report returned False")
                     actual_report_name = _resolve_report_name(rep)
                     overlay_names: list[str] = []
-                    # Style the live base trace before pasting; some AEDT builds do
-                    # not expose the original live trace in rep.traces after PasteTraces.
-                    if overlay_specs:
-                        # A first export initializes AEDT's report trace tree so the
-                        # live trace is styleable before the imported trace is pasted.
-                        try:
-                            post.export_report_to_jpg(
-                                str(out_dir) + "\\", actual_report_name,
-                                width=width, height=height, image_format="jpg",
-                            )
-                        except Exception:  # noqa: BLE001 - warm-up is best-effort
-                            pass
-                        _style_report_traces(rep, 1)
                     try:
                         for overlay_index, overlay in enumerate(overlay_specs):
                             overlay_name = _optional_text(overlay, "name")
@@ -1490,6 +1477,18 @@ class PyAedtBackend:
                         trace_style_applied = _style_report_traces(
                             rep, len(overlay_specs) + 1
                         )
+                        # Force the report to redraw trace styles; in non-graphical
+                        # AEDT builds the live trace can otherwise keep its cached look.
+                        try:
+                            _report_setup = getattr(post, "oreportsetup", None)
+                            if _report_setup is not None:
+                                try:
+                                    _report_setup.ClearAllMarkers(actual_report_name)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                _report_setup.UpdateTraces()
+                        except Exception:  # noqa: BLE001 - best-effort redraw
+                            pass
                         trace_names = [
                             str(getattr(trace, "name", ""))
                             for trace in list(getattr(rep, "traces", []) or [])
